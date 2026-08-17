@@ -1,0 +1,65 @@
+name: Scheduler
+
+# Drives Vestiq's background work.
+#
+# Cloudflare's free plan allows only 5 cron triggers per ACCOUNT, and this
+# account's slots are already used by other Workers — so instead of a native cron
+# trigger, this workflow calls POST /admin/jobs/tick, which runs the exact same
+# dispatcher as the cron handler (runScheduledTasks in src/jobs/index.ts).
+#
+# Each task keeps its own interval marker in KV, so the tick is cheap and
+# idempotent: calling it more often than needed does no extra work, and a missed
+# call is caught up by the next one.
+#
+# To move back to a native Cloudflare cron: free a trigger slot (or upgrade to
+# Workers Paid), re-enable [triggers] in wrangler.toml, and disable this workflow.
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub may delay scheduled runs under load; the
+    # KV interval markers make that harmless.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Job action to run'
+        required: true
+        default: tick
+        type: choice
+        options: [tick, drain, embed, feeds, trust, collections, popularity, alerts]
+
+concurrency:
+  group: scheduler
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run scheduled tasks
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ACTION: ${{ github.event.inputs.action || 'tick' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::error::ADMIN_TOKEN secret is not set — add it in repo Settings → Secrets → Actions."
+            exit 1
+          fi
+
+          STATUS=$(curl -sS -X POST \
+            -o /tmp/tick.json -w '%{http_code}' \
+            --max-time 120 \
+            -H "authorization: Bearer ${ADMIN_TOKEN}" \
+            "${SITE_URL%/}/admin/jobs/${ACTION}")
+
+          echo "HTTP ${STATUS}"
+          cat /tmp/tick.json
+          echo ""
+
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Scheduler tick failed with HTTP ${STATUS}"
+            exit 1
+          fi

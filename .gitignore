@@ -1,0 +1,16 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+dist/
+.DS_Store
+*.log
+npm-debug.log*
+.vscode/
+.idea/
+
+# Built client bundle is committed so `wrangler deploy` works from a clean
+# checkout without a build step; regenerate with `npm run build:client`.
+!public/app.js

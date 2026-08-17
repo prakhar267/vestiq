@@ -1,0 +1,76 @@
+name = "vestiq"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "41ed7bc118fad2779267d4e61988f423"
+workers_dev = true
+
+# Static assets (CSS, JS islands, icons, fonts). Assets win for matching paths,
+# everything else falls through to the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[observability]
+enabled = true
+
+[observability.logs]
+invocation_logs = true
+
+# --- D1 -----------------------------------------------------------------------
+# NOTE (ADR-9): the account is at the free-plan 10-database cap, so Vestiq shares
+# an existing database using `vestiq_`-prefixed tables. Migration to a dedicated
+# database is: `wrangler d1 create vestiq-db`, swap the two fields below, and set
+# TABLE_PREFIX = "" in src/lib/db.ts.
+[[d1_databases]]
+binding = "DB"
+database_name = "learnfrench-staging-db"
+database_id = "e97dee87-d089-48e5-ab56-f20a80d4838f"
+
+# --- KV -----------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "CACHE"
+id = "f66a3a5800ec49f29737a4bf9c3871e2"
+
+[[kv_namespaces]]
+binding = "VECTORS"
+id = "cfb89dafd6de444e9e76a0678c4260f5"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "e995b00e04314226ad18ce6e93211623"
+
+# --- Workers AI (default inference provider, ADR-5) ---------------------------
+[ai]
+binding = "AI"
+
+# --- Cron triggers (ADR-7) ----------------------------------------------------
+# A single trigger, by necessity and by design: the Workers Free plan allows only
+# 5 cron triggers per ACCOUNT (shared with this account's other Workers). All
+# scheduled work is dispatched inside the handler from per-task interval markers
+# in KV, which is also more robust than fixed expressions — a missed tick is
+# caught up on the next one instead of being skipped until the same time tomorrow.
+# See handleScheduled() in src/jobs/index.ts.
+# DISABLED: this account has already used all 5 free-plan cron slots on other
+# Workers, so registering one here fails the deploy. Scheduled work therefore runs
+# via POST /admin/jobs/tick, driven by .github/workflows/scheduler.yml — the exact
+# same code path as the cron handler.
+#
+# To switch back to a native cron trigger: free a slot (or upgrade to Workers
+# Paid), uncomment the two lines below, redeploy, and disable the GitHub workflow.
+# [triggers]
+# crons = ["*/15 * * * *"]
+
+[vars]
+SITE_NAME = "Vestiq"
+SITE_TAGLINE = "Describe it. We'll find it."
+SITE_URL = "https://vestiq.prakhargupta267.workers.dev"
+CURRENCY = "INR"
+EMBED_DIM = "384"
+EMBED_VERSION = "1"
+LOG_LEVEL = "info"
+
+# Secrets (set via `wrangler secret put <NAME>`), never in this file:
+#   ADMIN_TOKEN     - required, gates /admin
+#   GEMINI_API_KEY  - optional, upgrades AI from Workers AI to Gemini
+#   RESEND_API_KEY  - optional, enables outbound alert email
