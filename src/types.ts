@@ -15,6 +15,12 @@ export interface Env {
   EMBED_DIM: string;
   EMBED_VERSION: string;
   LOG_LEVEL: string;
+  /**
+   * "1" enables traffic-driven scheduling (see maybeRunScheduledFromRequest).
+   * Off by default so a real cron trigger or external scheduler is the explicit,
+   * preferred driver — and so tests are not mutating data mid-request.
+   */
+  SCHEDULER_PIGGYBACK?: string;
 
   ADMIN_TOKEN?: string;
   GEMINI_API_KEY?: string;

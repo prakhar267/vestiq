@@ -86,11 +86,22 @@ ADMIN_TOKEN=... SITE_URL=... npm run embed
 
 ## Background work
 
-All 5 free-plan cron trigger slots on this account are already used by other
-Workers, so the native `[triggers]` block in `wrangler.toml` is commented out and
-scheduled work is driven by `.github/workflows/scheduler.yml`, which calls
-`POST /admin/jobs/tick` every 15 minutes. That endpoint runs
-`runScheduledTasks()` — **the identical code path** the cron handler uses.
+There are three interchangeable drivers for scheduled work. All three call the
+same `runScheduledTasks()` dispatcher, and each task keeps its own interval marker
+in KV — so drivers can be swapped, run together, or fired manually without
+duplicating work or losing any.
+
+| Driver | Status here | Notes |
+| --- | --- | --- |
+| **Cloudflare cron trigger** | ❌ unavailable | Preferred, but all 5 free-plan cron slots on this account are used by other Workers. `[triggers]` is commented out in `wrangler.toml`. |
+| **GitHub Actions** (`.github/workflows/scheduler.yml`) | ⚠️ configured, blocked | Calls `POST /admin/jobs/tick` every 15 min. Secrets are set, but runs currently fail with *"recent account payments have failed or your spending limit needs to be increased"* — private-repo Actions minutes are billable. Fix billing, or make the repo public, and it starts working with no code change. |
+| **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ✅ active | A small share of page views carries the work in `waitUntil`, at most once per 15 min via a KV claim, with a 5 s budget. Never delays a response. Its only weakness is that no traffic means no maintenance. |
+
+Once a cron slot or Actions billing is available, set `SCHEDULER_PIGGYBACK = "0"`
+and enable the preferred driver.
+
+`POST /admin/jobs/tick` runs `runScheduledTasks()` — **the identical code path** the
+cron handler uses.
 
 Required GitHub configuration:
 - repo secret **`ADMIN_TOKEN`** — must match the Worker secret;

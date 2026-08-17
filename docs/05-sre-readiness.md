@@ -137,11 +137,19 @@ Two items I cannot do without account-level changes:
 1. **Configure alerting.** Point an external monitor (Better Stack, Pingdom, or a
    Cloudflare Notification) at `/health` with a 5-minute interval and alert on
    non-200 or on `"status":"unhealthy"`.
-2. **Decide the scheduler mechanism.** Background work currently runs from the
-   GitHub Actions workflow, because all 5 free-plan cron slots on this account are
-   used by other Workers. Either free a slot (then re-enable `[triggers]` in
-   `wrangler.toml` and disable the workflow), or upgrade to Workers Paid, or leave
-   the workflow in place — it drives the identical code path.
+2. **Decide the scheduler mechanism.** Background work is currently carried by
+   ordinary page traffic (`SCHEDULER_PIGGYBACK = "1"`), because both preferred
+   drivers are unavailable on this account: all 5 free-plan Cloudflare cron slots
+   are used by other Workers, and GitHub Actions runs are blocked by an Actions
+   billing failure on the GitHub account. Traffic-driven scheduling is safe and
+   idempotent but stops when traffic stops, so pick one:
+   - fix GitHub Actions billing (or make the repo public) — the workflow is already
+     configured and will start working with no code change; **or**
+   - free a Cloudflare cron slot / upgrade to Workers Paid, then re-enable
+     `[triggers]` in `wrangler.toml`.
+
+   Then set `SCHEDULER_PIGGYBACK = "0"`. See `docs/07-deployment.md` for the
+   comparison table.
 
 Also recommended before real traffic: a custom domain (see
 `docs/07-deployment.md`), and adding `GEMINI_API_KEY` to upgrade parse and vision

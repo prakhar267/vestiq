@@ -786,13 +786,14 @@ export async function handleScheduled(event: ScheduledController, env: Env): Pro
 export async function runScheduledTasks(
   env: Env,
   log: Logger,
+  budgetMs: number = SCHEDULE_BUDGET_MS,
 ): Promise<{ ran: string[]; skipped: string[]; ms: number }> {
   const started = Date.now();
   const ran: string[] = [];
   const skipped: string[] = [];
 
   for (const task of SCHEDULED_TASKS) {
-    if (Date.now() - started > SCHEDULE_BUDGET_MS) {
+    if (Date.now() - started > budgetMs) {
       skipped.push(task.name);
       continue;
     }
@@ -849,4 +850,48 @@ async function weeklyMaintenance(env: Env, log: Logger): Promise<void> {
     ),
   ]);
   log.info('weekly maintenance done');
+}
+
+// ---------------------------------------------------------------- piggyback driver
+
+/**
+ * Traffic-driven scheduling — the third and last-resort driver.
+ *
+ * This account has no free Cloudflare cron slots left, and GitHub Actions is
+ * unavailable when Actions billing is blocked. Rather than leave maintenance with
+ * no driver at all, a small share of ordinary requests carries it: after the
+ * response is sent, one request per interval runs whatever is due.
+ *
+ * Properties that make this safe:
+ *   - it runs in `waitUntil`, so it never delays a user's response;
+ *   - a KV claim means exactly one request per interval does the work;
+ *   - the budget is small (5s wall, almost all of it I/O wait rather than CPU),
+ *     and every task is idempotent and resumable, so being cut short mid-run
+ *     simply defers the remainder to the next carrier request.
+ *
+ * Its one real weakness: no traffic means no maintenance. That is acceptable for
+ * a site whose maintenance exists to serve traffic, but it is why a real cron
+ * trigger remains the preferred driver (docs/07-deployment.md).
+ */
+const PIGGYBACK_KEY = 'cron:driver:last';
+const PIGGYBACK_INTERVAL_MS = 15 * MINUTE;
+const PIGGYBACK_BUDGET_MS = 5_000;
+
+export async function maybeRunScheduledFromRequest(env: Env, log: Logger): Promise<void> {
+  if (env.SCHEDULER_PIGGYBACK !== '1') return;
+  try {
+    const raw = await env.CACHE.get(PIGGYBACK_KEY);
+    const last = raw ? parseInt(raw, 10) || 0 : 0;
+    if (Date.now() - last < PIGGYBACK_INTERVAL_MS) return;
+
+    // Claim before doing any work so concurrent requests don't pile on.
+    await env.CACHE.put(PIGGYBACK_KEY, String(Date.now()), {
+      expirationTtl: Math.ceil((PIGGYBACK_INTERVAL_MS * 3) / 1000),
+    });
+
+    await runScheduledTasks(env, log.child({ trigger: 'piggyback' }), PIGGYBACK_BUDGET_MS);
+  } catch (err) {
+    // Never let background scheduling affect the request that carried it.
+    log.error('piggyback scheduling failed', err);
+  }
 }

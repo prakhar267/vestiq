@@ -69,6 +69,10 @@ CURRENCY = "INR"
 EMBED_DIM = "384"
 EMBED_VERSION = "1"
 LOG_LEVEL = "info"
+# Traffic-driven scheduling. Enabled because this account has no free cron slots
+# left and GitHub Actions billing is blocked; set to "0" once a real cron trigger
+# or the Actions scheduler is driving /admin/jobs/tick.
+SCHEDULER_PIGGYBACK = "1"
 
 # Secrets (set via `wrangler secret put <NAME>`), never in this file:
 #   ADMIN_TOKEN     - required, gates /admin

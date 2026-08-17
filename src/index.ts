@@ -12,7 +12,7 @@ import { adminRoutes } from './routes/admin';
 import { merchantRoutes } from './routes/merchant';
 import { seoRoutes } from './routes/seo';
 import { goRoutes } from './routes/go';
-import { handleScheduled } from './jobs';
+import { handleScheduled, maybeRunScheduledFromRequest } from './jobs';
 
 type Ctx = {
   Bindings: Env;
@@ -48,6 +48,12 @@ app.use('*', async (c, next) => {
   await next();
 
   if (dirty) c.executionCtx.waitUntil(saveSession(c.env, session));
+
+  // Traffic-driven scheduling fallback. Runs after the response, at most once per
+  // interval, and only for real page traffic — see maybeRunScheduledFromRequest.
+  if (!appCtx.isBot && c.req.method === 'GET' && !c.req.path.startsWith('/api/')) {
+    c.executionCtx.waitUntil(maybeRunScheduledFromRequest(c.env, log));
+  }
   if (setCookie) c.header('set-cookie', setCookie, { append: true });
 
   for (const [k, v] of Object.entries(securityHeaders(appCtx.nonce))) {
