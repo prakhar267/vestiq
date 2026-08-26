@@ -3,7 +3,14 @@ import type { AppContext, Brand, Env, ParsedQuery, ResultItem, SortKey } from '.
 import { PRODUCT_COLUMNS, T, inClause, rowToBrand, rowToProduct } from '../lib/db';
 import { esc, formatINR, normaliseQuery, safeJson, sha256Hex, timeAgo, truncate } from '../lib/util';
 import { ownerKey } from '../lib/session';
-import { label } from '../ai/lexicon';
+import {
+  ALL_CATEGORIES,
+  ALL_COLORS,
+  ALL_MATERIALS,
+  ALL_OCCASIONS,
+  ALL_STYLES,
+  label,
+} from '../ai/lexicon';
 import { heuristicParse } from '../ai/heuristic';
 import { search, trendingQueries } from '../search';
 import { priceBandRange } from '../search/facets';
@@ -31,6 +38,116 @@ type Ctx = { Bindings: Env; Variables: { app: AppContext } };
 export const pageRoutes = new Hono<Ctx>();
 
 const SORTS: SortKey[] = ['relevance', 'price_asc', 'price_desc', 'newest', 'popular'];
+const MAX_FACET_VALUES = 8;
+const MAX_PRICE_RUPEES = 10_000_000;
+const SIZE_VALUE = /^(?:xxs|xs|s|m|l|xl|xxl|3xl|4xl|5xl|free|\d{1,2}(?:\.\d)?)$/;
+const BRAND_VALUE = /^(?=.{1,80}$)[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
+const BRAND_DROP_VALUE = /^[\p{L}\p{N}&.' _-]{1,80}$/u;
+
+const FACET_VALUES: Record<string, Set<string>> = {
+  category: new Set(ALL_CATEGORIES),
+  color: new Set(ALL_COLORS),
+  material: new Set(ALL_MATERIALS),
+  occasion: new Set(ALL_OCCASIONS),
+  style: new Set(ALL_STYLES),
+};
+
+function appendValidatedMany(
+  out: URLSearchParams,
+  raw: URLSearchParams,
+  key: string,
+  valid: (value: string) => boolean,
+): void {
+  const seen = new Set<string>();
+  for (const input of raw.getAll(key)) {
+    const value = input.trim().toLowerCase();
+    if (!value || seen.has(value) || !valid(value)) continue;
+    out.append(key, value);
+    seen.add(value);
+    if (seen.size >= MAX_FACET_VALUES) break;
+  }
+}
+
+function validatedRupees(value: string | null): number | null {
+  if (!value || !/^\d{1,8}$/.test(value)) return null;
+  const amount = Number(value);
+  return Number.isSafeInteger(amount) && amount > 0 && amount <= MAX_PRICE_RUPEES
+    ? amount
+    : null;
+}
+
+function validDrop(value: string): boolean {
+  if (value === 'price_max' || value === 'price_min' || value === 'gender') return true;
+  const split = value.indexOf(':');
+  if (split < 1) return false;
+  const kind = value.slice(0, split);
+  const token = value.slice(split + 1).trim().toLowerCase();
+  if (!token) return false;
+  if (kind === 'xcolor') return FACET_VALUES.color.has(token);
+  if (kind === 'size') return SIZE_VALUE.test(token);
+  if (kind === 'brand' || kind === 'like') return BRAND_DROP_VALUE.test(value.slice(split + 1));
+  const param = kind === 'category' || kind === 'color' || kind === 'material' || kind === 'occasion' || kind === 'style'
+    ? kind
+    : null;
+  return Boolean(param && FACET_VALUES[param].has(token));
+}
+
+/**
+ * Canonical, bounded search state shared by the HTML and JSON routes.
+ * Unknown values never reach parsing/filtering and repeated facets cannot grow
+ * request work without bound.
+ */
+export function validatedSearchParams(
+  raw: URLSearchParams,
+  query = (raw.get('q') ?? '').trim().slice(0, 300),
+): URLSearchParams {
+  const out = new URLSearchParams();
+  if (query) out.set('q', query);
+
+  for (const [key, allowed] of Object.entries(FACET_VALUES)) {
+    appendValidatedMany(out, raw, key, (value) => allowed.has(value));
+  }
+  appendValidatedMany(out, raw, 'size', (value) => SIZE_VALUE.test(value));
+  appendValidatedMany(out, raw, 'brand', (value) => BRAND_VALUE.test(value));
+
+  const bands = raw
+    .getAll('price_band')
+    .map((value) => value.trim().toLowerCase())
+    .find((value) => priceBandRange(value));
+  if (bands) out.set('price_band', bands);
+
+  let min = validatedRupees(raw.get('min'));
+  const max = validatedRupees(raw.get('max'));
+  if (min !== null && max !== null && min > max) min = null;
+  if (min !== null) out.set('min', String(min));
+  if (max !== null) out.set('max', String(max));
+
+  const sort = raw.get('sort') as SortKey | null;
+  if (sort && SORTS.includes(sort)) out.set('sort', sort);
+
+  const pageRaw = raw.get('page');
+  if (pageRaw && /^\d{1,4}$/.test(pageRaw)) {
+    out.set('page', String(Math.min(1000, Math.max(1, Number(pageRaw)))));
+  }
+  if (raw.get('debug') === '1') out.set('debug', '1');
+  if (raw.get('filters') === '1') out.set('filters', '1');
+
+  const drops = new Set<string>();
+  for (const input of raw.getAll('drop')) {
+    const value = input.trim();
+    if (!validDrop(value) || drops.has(value)) continue;
+    out.append('drop', value);
+    drops.add(value);
+    if (drops.size >= 20) break;
+  }
+
+  return out;
+}
+
+export function validatedSort(params: URLSearchParams): SortKey {
+  const value = params.get('sort') as SortKey | null;
+  return value && SORTS.includes(value) ? value : 'relevance';
+}
 
 /** Which products this owner has already saved, so hearts render filled. */
 async function savedIds(env: Env, owner: string, ids: string[]): Promise<Set<string>> {
@@ -54,40 +171,65 @@ async function savedIds(env: Env, owner: string, ids: string[]): Promise<Set<str
  * unchecking a filter appears to do nothing, which reads as a broken product.
  */
 export function applyUrlFilters(parse: ParsedQuery, params: URLSearchParams): ParsedQuery {
-  const out: ParsedQuery = { ...parse };
+  const clean = validatedSearchParams(params, params.get('q') ?? '');
+  const filterForm = clean.get('filters') === '1';
+  const out: ParsedQuery = {
+    ...parse,
+    categories: [...parse.categories],
+    colors: [...parse.colors],
+    exclude_colors: [...parse.exclude_colors],
+    materials: [...parse.materials],
+    occasions: [...parse.occasions],
+    style_tags: [...parse.style_tags],
+    brands: [...parse.brands],
+    like_brands: [...parse.like_brands],
+    sizes: [...parse.sizes],
+    exclude_terms: [...parse.exclude_terms],
+  };
 
-  const categories = params.getAll('category').filter(Boolean);
-  if (categories.length) out.categories = categories;
+  const categories = clean.getAll('category');
+  if (categories.length || filterForm) out.categories = categories;
 
-  const colors = params.getAll('color').filter(Boolean);
-  if (colors.length) out.colors = colors;
+  const colors = clean.getAll('color');
+  if (colors.length || filterForm) out.colors = colors;
 
-  const materials = params.getAll('material').filter(Boolean);
-  if (materials.length) out.materials = materials;
+  const materials = clean.getAll('material');
+  if (materials.length || filterForm) out.materials = materials;
 
-  const occasions = params.getAll('occasion').filter(Boolean);
-  if (occasions.length) out.occasions = occasions;
+  const occasions = clean.getAll('occasion');
+  if (occasions.length || filterForm) out.occasions = occasions;
 
-  const sizes = params.getAll('size').filter(Boolean);
-  if (sizes.length) out.sizes = sizes.map((s) => s.toLowerCase());
+  const styles = clean.getAll('style');
+  if (styles.length) out.style_tags = styles;
 
-  const band = params.get('price_band');
+  const sizes = clean.getAll('size');
+  if (sizes.length || filterForm) out.sizes = sizes;
+
+  // The public facet carries a brand slug. Hydrated candidates carry both that
+  // slug and the immutable brand id, so hard filtering never relies on a label.
+  const brands = clean.getAll('brand');
+  if (brands.length || filterForm) out.brands = brands;
+
+  const band = clean.get('price_band');
   if (band) {
     const range = priceBandRange(band);
     if (range) {
       out.price_min = range.min > 0 ? range.min : undefined;
-      out.price_max = range.max ?? undefined;
+      // Facet bands are half-open; ParsedQuery price bounds are inclusive.
+      out.price_max = range.max === null ? undefined : range.max - 1;
     }
   }
 
-  const minRupees = parseInt(params.get('min') ?? '', 10);
-  if (Number.isFinite(minRupees) && minRupees > 0) out.price_min = minRupees * 100;
-  const maxRupees = parseInt(params.get('max') ?? '', 10);
-  if (Number.isFinite(maxRupees) && maxRupees > 0) out.price_max = maxRupees * 100;
+  const minRupees = validatedRupees(clean.get('min'));
+  if (minRupees !== null) out.price_min = minRupees * 100;
+  const maxRupees = validatedRupees(clean.get('max'));
+  if (maxRupees !== null) out.price_max = maxRupees * 100;
 
   // Chip removal (data-drop) arrives as ?drop=color:black
-  for (const drop of params.getAll('drop')) {
-    const [kind, value] = drop.split(':');
+  for (const drop of clean.getAll('drop')) {
+    const split = drop.indexOf(':');
+    const kind = split === -1 ? drop : drop.slice(0, split);
+    const value = split === -1 ? '' : drop.slice(split + 1);
     switch (kind) {
       case 'category':
         out.categories = out.categories.filter((v) => v !== value);
@@ -112,6 +254,11 @@ export function applyUrlFilters(parse: ParsedQuery, params: URLSearchParams): Pa
         break;
       case 'like':
         out.like_brands = out.like_brands.filter((v) => v !== value);
+        break;
+      case 'brand':
+        out.brands = out.brands.filter(
+          (v) => v.toLowerCase() !== value.toLowerCase(),
+        );
         break;
       case 'price_max':
         out.price_max = undefined;
@@ -172,7 +319,7 @@ pageRoutes.get('/', async (c) => {
   const body = `
 <section class="hero"><div class="wrap">
   <h1>Fashion the internet hid from you.</h1>
-  <p class="tagline">${esc(env.SITE_TAGLINE)} Search ${'10,000+'} independent brands by mood, occasion, budget — or a screenshot.</p>
+  <p class="tagline">${esc(env.SITE_TAGLINE)} Search independent brands by mood, occasion, budget — or a screenshot.</p>
   ${searchBarShell('hero')}
   <div class="examples">
     <ul class="chips">
@@ -238,7 +385,7 @@ ${
       {
         env,
         title: `${env.SITE_NAME} — ${env.SITE_TAGLINE}`,
-        description: `Describe what you want in plain words and find it across 10,000+ independent fashion brands. Search by mood, occasion, budget, or upload a photo.`,
+        description: `Describe what you want in plain words and discover independent fashion brands by mood, occasion, budget, or a photo.`,
         path: '/',
         nonce: app.nonce,
         jsonLd,
@@ -255,8 +402,8 @@ pageRoutes.get('/search', async (c) => {
   const { app } = c.var;
   const env = c.env;
   const url = new URL(c.req.url);
-  const params = url.searchParams;
-  const query = (params.get('q') ?? '').trim().slice(0, 300);
+  const query = (url.searchParams.get('q') ?? '').trim().slice(0, 300);
+  const params = validatedSearchParams(url.searchParams, query);
 
   if (!query) {
     return c.html(
@@ -281,8 +428,7 @@ pageRoutes.get('/search', async (c) => {
   }
 
   const page = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
-  const sortParam = params.get('sort') as SortKey | null;
-  const sort: SortKey = sortParam && SORTS.includes(sortParam) ? sortParam : 'relevance';
+  const sort = validatedSort(params);
 
   // Parse, then let explicit URL filters override the model.
   const { parseQueryCached } = await import('../search');
@@ -311,6 +457,9 @@ pageRoutes.get('/search', async (c) => {
     response.items.map((i) => i.id),
   );
 
+  const searchState = new URLSearchParams(params);
+  searchState.delete('page');
+  const resultPath = `/search?${searchState.toString()}`;
   const canonicalPath = `/search?q=${encodeURIComponent(query)}${page > 1 ? `&page=${page}` : ''}`;
 
   const jsonLd =
@@ -332,13 +481,14 @@ pageRoutes.get('/search', async (c) => {
         ]
       : [];
 
+  const pageHref = (target: number) => {
+    const next = new URLSearchParams(searchState);
+    if (target > 1) next.set('page', String(target));
+    return `${esc(env.SITE_URL)}/search?${esc(next.toString())}`;
+  };
   const relLinks = [
-    page > 1
-      ? `<link rel="prev" href="${esc(env.SITE_URL)}/search?q=${encodeURIComponent(query)}${page > 2 ? `&page=${page - 1}` : ''}">`
-      : '',
-    response.has_more
-      ? `<link rel="next" href="${esc(env.SITE_URL)}/search?q=${encodeURIComponent(query)}&page=${page + 1}">`
-      : '',
+    page > 1 ? `<link rel="prev" href="${pageHref(page - 1)}">` : '',
+    response.has_more ? `<link rel="next" href="${pageHref(page + 1)}">` : '',
   ].join('');
 
   const body = `
@@ -352,7 +502,7 @@ ${parseChips(response.parse, query)}
         ${response.degraded.length ? ' · <span class="badge warn">smart search degraded</span>' : ''}
       </p>
     </div>
-    ${sortSelect(sort, query)}
+    ${sortSelect(sort, query, params)}
   </div>
 </div>
 
@@ -361,7 +511,7 @@ ${
     ? emptyState(response)
     : `<div class="wrap">
       <div class="layout-with-rail">
-        ${filterRail(response.facets, query, params)}
+        ${filterRail(response.facets, query, params, response.parse)}
         <div>
           ${refineRail(response.parse, query)}
           <div id="results" data-query="${esc(query)}" data-page="${page}" data-total="${response.total}">
@@ -372,7 +522,7 @@ ${
               now: Date.now(),
             })}
           </div>
-          ${pagination(page, response.has_more, canonicalPath)}
+          ${pagination(page, response.has_more, resultPath)}
         </div>
       </div>
     </div>`
@@ -414,7 +564,7 @@ pageRoutes.get('/p/:handle', async (c) => {
     `SELECT ${PRODUCT_COLUMNS}, b.description AS brand_description, b.domain AS brand_domain,
             b.return_days AS brand_return_days, b.city AS brand_city
      FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
-     WHERE p.id = ? AND p.status != 'hidden'`,
+     WHERE p.id = ? AND p.status = 'active' AND b.status = 'active'`,
   )
     .bind(id)
     .first<Record<string, unknown>>();
@@ -433,7 +583,6 @@ pageRoutes.get('/p/:handle', async (c) => {
         : Number(row.brand_ship_days),
     score: 0,
     match_reasons: [],
-    promoted: false,
   };
 
   // Canonical URL uses the current slug; redirect if the handle drifted, so we
@@ -554,9 +703,9 @@ pageRoutes.get('/p/:handle', async (c) => {
       </div>
 
       <a class="btn btn-primary btn-block" href="/go/${esc(product.id)}"
-         rel="nofollow sponsored noopener" target="_blank"
+         rel="nofollow noopener" target="_blank"
          style="margin-bottom:var(--s3)">
-        View at ${esc(item.brand_name)} ${ICONS.arrow}
+        View on ${esc(item.brand_name)} ${ICONS.arrow}
       </a>
 
       <div class="row" style="margin-bottom:var(--s5)">
@@ -565,7 +714,7 @@ pageRoutes.get('/p/:handle', async (c) => {
           ${ICONS.heart} <span>${saved.has(product.id) ? 'Saved' : 'Save'}</span>
         </button>
         <button class="btn btn-sm" type="button" data-alert="${esc(product.id)}"
-          data-kind="${inStock ? 'price_drop' : 'back_in_stock'}">
+          data-kind="${inStock ? 'price_drop' : 'back_in_stock'}" aria-pressed="false">
           ${ICONS.bell} <span>${inStock ? 'Alert on price drop' : 'Tell me when it’s back'}</span>
         </button>
       </div>
@@ -606,8 +755,8 @@ pageRoutes.get('/p/:handle', async (c) => {
         <button class="btn btn-sm" type="button" data-report="${esc(product.id)}">Report a problem with this listing</button>
       </p>
       <p class="disclosure">
-        We may earn a commission if you buy through this link, at no extra cost to
-        you. Price and availability shown as last checked and may differ at ${esc(item.brand_name)}.
+        You buy directly from ${esc(item.brand_name)}. Price and availability shown
+        as last checked may differ on the brand's site.
       </p>
     </div>
   </div>
@@ -699,7 +848,6 @@ pageRoutes.get('/brand/:slug', async (c) => {
     perPage: 24,
     sort: 'newest',
     session: app.session,
-    noPromoted: true,
   });
 
   const jsonLd = [
@@ -926,7 +1074,6 @@ pageRoutes.get('/wardrobe', async (c) => {
         : Number(row.brand_ship_days),
     score: 0,
     match_reasons: [],
-    promoted: false,
   }));
 
   const alertsRes = await env.DB.prepare(
@@ -964,13 +1111,13 @@ pageRoutes.get('/wardrobe', async (c) => {
       },
       `<div class="wrap">
         <section class="section">
-          <h1>Saved</h1>
+          <h1>Your wardrobe</h1>
           ${
             app.session.user_id
               ? ''
               : `<div class="notice" style="margin-top:var(--s4)">
-                  These are saved to this browser. <a href="/account">Add your email</a> to
-                  sync across devices and get alerts.
+                  Saved pieces stay with this browser. You can add an email when
+                  setting an alert so we can notify you.
                 </div>`
           }
         </section>
@@ -1084,7 +1231,7 @@ pageRoutes.get('/stylist', async (c) => {
               </div>
             </div>
             <p class="tiny" style="margin:var(--s2) 0 0;text-align:center">
-              Recommendations link to the brand's own store. We may earn a commission.
+              Recommendations link to the brand's own store. Vestiq is free to use.
             </p>
           </form>
         </div>
@@ -1109,12 +1256,9 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
       <p>Vestiq indexes the long tail for the way people actually describe clothes.
       Describe it however you think about it — a mood, an occasion, a budget, a
       screenshot — and we find it across brands you'd otherwise never see.</p>
-      <h2>How we make money</h2>
-      <p>When you buy through a link we may earn a commission from the brand, at no
-      extra cost to you. Brands can also pay for clearly labelled <em>Promoted</em>
-      placements, capped at two slots per page. Paid placement never changes the
-      ranking of anything else — the ordering you see is the ordering our relevance
-      model produced.</p>
+      <h2>Free during launch</h2>
+      <p>Vestiq is currently free for shoppers and brands. Search ordering is based
+      on relevance and catalogue quality; there are no paid placements.</p>
       <h2>What we don't do</h2>
       <p>We don't take payments, hold inventory, or predict your size. You buy from the
       brand directly, on their own site, under their own returns policy.</p>`,
@@ -1133,21 +1277,18 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
         the ones that <em>nearly</em> matched. That gap report is a product roadmap.</li>
         <li><strong>Feed health.</strong> Every rejected item, with the reason, so you
         can fix your data rather than guess.</li>
-        <li><strong>Optional promoted placement.</strong> Bid per click, cap your budget,
-        pause anytime. Always labelled.</li>
       </ul>
       <h2>What it costs</h2>
-      <p>Listing is free. We earn an affiliate commission on referred sales.
-      Promoted placement is pay-per-click. Brand intelligence is a monthly
-      subscription.</p>
+      <p>Nothing during launch. Listing, catalogue tools and discovery are free, with
+      no subscription, payment setup or paid placement.</p>
       <p><a class="btn btn-primary" href="/merchant/signup">List your brand</a></p>`,
   },
   privacy: {
     title: 'Privacy',
     description: 'What we collect and why.',
     body: `<h1>Privacy</h1>
-      <p><strong>Anonymous by default.</strong> You can search, save and set alerts
-      without an account. We set one first-party cookie holding a random session id.
+      <p><strong>Anonymous by default.</strong> You can search, save and set alerts.
+      We set one first-party cookie holding a random session id.
       It contains no personal information.</p>
       <h2>What we store</h2>
       <ul>
@@ -1164,8 +1305,8 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
         a normal referral, the same as any link.</li>
       </ul>
       <h2>Your controls</h2>
-      <p>Clearing cookies detaches you from your saved items. To delete an account and
-      its data, email <a href="mailto:privacy@vestiq.in">privacy@vestiq.in</a> and we'll
+      <p>Clearing cookies detaches you from your saved items. To request deletion of
+      data associated with your email, contact <a href="mailto:privacy@vestiq.in">privacy@vestiq.in</a> and we'll
       action it within 30 days.</p>`,
   },
   terms: {
@@ -1180,9 +1321,9 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
       <p>Prices, availability and descriptions come from brand-supplied feeds and are
       shown as last verified. They can change at any time. We show you when each
       listing was last checked; always confirm on the brand's own site before buying.</p>
-      <h2>Commercial disclosure</h2>
-      <p>We may earn commission on referred purchases. Some placements are paid and are
-      labelled "Promoted". Paid placement does not alter organic ranking.</p>
+      <h2>Free service</h2>
+      <p>Vestiq is free during launch and does not sell paid search placement. Product
+      links take you to the brand's own store.</p>
       <h2>Acceptable use</h2>
       <p>Don't scrape, resell our index, or attempt to overwhelm the service. We rate
       limit and may block abusive traffic.</p>
@@ -1227,7 +1368,6 @@ function toResultItem(row: Record<string, unknown>): ResultItem {
         : Number(row.brand_ship_days),
     score: 0,
     match_reasons: [],
-    promoted: false,
   };
 }
 

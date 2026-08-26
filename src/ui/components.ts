@@ -28,9 +28,6 @@ export function altFor(item: ResultItem): string {
  */
 export function imageUrl(src: string | null, width: number): string {
   if (!src) return '';
-  // Same-origin paths (our own placeholder renderer, /ph) are served directly —
-  // proxying our own origin through /img would be a pointless round-trip.
-  if (src.startsWith('/')) return src;
   if (!/^https?:\/\//i.test(src)) return '';
   return `/img?w=${width}&u=${encodeURIComponent(src)}`;
 }
@@ -84,7 +81,6 @@ export function productCard(item: ResultItem, opts: CardOptions = {}): string {
   const href = `/p/${esc(item.slug)}-${esc(item.id)}`;
   const img = imageUrl(item.image_url, 480);
   return `<article class="card"${opts.position !== undefined ? ` data-pos="${opts.position}"` : ''}>
-  ${item.promoted ? '<span class="promoted-flag">Promoted</span>' : ''}
   <button class="save-btn" type="button" data-save="${esc(item.id)}"
     aria-pressed="${opts.saved ? 'true' : 'false'}"
     aria-label="${opts.saved ? 'Remove from saved' : 'Save'} ${esc(item.title)}">${ICONS.heart}</button>
@@ -146,6 +142,7 @@ export function parseChips(parse: ParsedQuery, query: string): string {
     chips.push({ label: `≥ ${formatINR(parse.price_min)}`, drop: 'price_min' });
   for (const s of parse.sizes) chips.push({ label: `Size ${s.toUpperCase()}`, drop: `size:${s}` });
   if (parse.gender) chips.push({ label: label(parse.gender), drop: 'gender' });
+  for (const b of parse.brands) chips.push({ label: b, drop: `brand:${b}` });
   for (const b of parse.like_brands) chips.push({ label: `Like ${b}`, drop: `like:${b}` });
 
   if (!chips.length) return '';
@@ -190,20 +187,58 @@ export function refineRail(parse: ParsedQuery, query: string): string {
 }
 
 /** Filter rail. Real form controls so it works with JS disabled (design §7). */
-export function filterRail(facets: Facets, query: string, active: URLSearchParams): string {
+function hiddenSearchInputs(active: URLSearchParams, omit: Set<string>): string {
+  return [...active.entries()]
+    .filter(([key]) => !omit.has(key))
+    .map(
+      ([key, value]) =>
+        `<input type="hidden" name="${esc(key)}" value="${esc(value)}">`,
+    )
+    .join('');
+}
+
+function comparableFacet(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+export function filterRail(
+  facets: Facets,
+  query: string,
+  active: URLSearchParams,
+  parse?: ParsedQuery,
+): string {
+  const inferred: Record<string, string[]> = {
+    category: parse?.categories ?? [],
+    color: parse?.colors ?? [],
+    material: parse?.materials ?? [],
+    occasion: parse?.occasions ?? [],
+    size: parse?.sizes ?? [],
+    brand: parse?.brands ?? [],
+    price_band: [],
+  };
+
   const group = (
     title: string,
     param: string,
     buckets: { value: string; label: string; count: number }[],
+    single = false,
   ) => {
     if (!buckets.length) return '';
-    const selected = new Set(active.getAll(param));
+    const selected = new Set([...active.getAll(param), ...(inferred[param] ?? [])]);
+    if (param === 'brand' && parse?.brands.length) {
+      const wanted = new Set(parse.brands.map(comparableFacet));
+      for (const bucket of buckets) {
+        if (wanted.has(comparableFacet(bucket.value)) || wanted.has(comparableFacet(bucket.label))) {
+          selected.add(bucket.value);
+        }
+      }
+    }
     return `<section>
       <h3>${esc(title)}</h3>
       ${buckets
         .map(
           (b) => `<label>
-        <input type="checkbox" name="${esc(param)}" value="${esc(b.value)}"${
+        <input type="${single ? 'radio' : 'checkbox'}" name="${esc(param)}" value="${esc(b.value)}"${
           selected.has(b.value) ? ' checked' : ''
         }>
         <span>${esc(b.label)}</span><span class="count tnum">${b.count}</span>
@@ -213,19 +248,43 @@ export function filterRail(facets: Facets, query: string, active: URLSearchParam
     </section>`;
   };
 
-  return `<aside class="rail">
-    <form action="/search" method="GET">
+  const controlled = new Set([
+    'q',
+    'page',
+    'format',
+    'filters',
+    'category',
+    'price_band',
+    'brand',
+    'color',
+    'material',
+    'occasion',
+    'size',
+  ]);
+  const form = () => `<form action="/search" method="GET">
       <input type="hidden" name="q" value="${esc(query)}">
+      <input type="hidden" name="filters" value="1">
+      ${hiddenSearchInputs(active, controlled)}
       ${group('Category', 'category', facets.category)}
-      ${group('Price', 'price_band', facets.price_band)}
+      ${group('Price', 'price_band', facets.price_band, true)}
       ${group('Brand', 'brand', facets.brand)}
       ${group('Colour', 'color', facets.color)}
       ${group('Fabric', 'material', facets.material)}
       ${group('Occasion', 'occasion', facets.occasion)}
       ${group('Size', 'size', facets.size)}
       <button class="btn btn-block btn-sm" type="submit" style="margin-top:var(--s5)">Apply filters</button>
-    </form>
-  </aside>`;
+    </form>`;
+
+  const activeCount = ['category', 'price_band', 'brand', 'color', 'material', 'occasion', 'size']
+    .reduce((sum, key) => sum + active.getAll(key).length, 0);
+
+  return `<div class="mobile-filters">
+    <details>
+      <summary class="btn btn-block">Filters${activeCount ? ` (${activeCount})` : ''}</summary>
+      <div style="padding:var(--s4) 0">${form()}</div>
+    </details>
+  </div>
+  <aside class="rail" aria-label="Search filters">${form()}</aside>`;
 }
 
 /**
@@ -257,7 +316,11 @@ export function emptyState(response: SearchResponse): string {
   </div>`;
 }
 
-export function sortSelect(current: string, query: string): string {
+export function sortSelect(
+  current: string,
+  query: string,
+  active: URLSearchParams = new URLSearchParams(),
+): string {
   const options = [
     ['relevance', 'Most relevant'],
     ['newest', 'Newest'],
@@ -267,6 +330,7 @@ export function sortSelect(current: string, query: string): string {
   ];
   return `<form action="/search" method="GET" class="row">
     <input type="hidden" name="q" value="${esc(query)}">
+    ${hiddenSearchInputs(active, new Set(['q', 'sort', 'page', 'format']))}
     <label class="sr-only" for="sort">Sort results</label>
     <select id="sort" name="sort" data-autosubmit>
       ${options

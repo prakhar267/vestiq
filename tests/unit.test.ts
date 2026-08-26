@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   clamp,
   discountPct,
@@ -21,21 +21,32 @@ import {
   buildRelaxations,
   freshnessFactor,
   fuse,
-  injectPromoted,
   matchReasons,
-  MAX_PROMOTED_PER_PAGE,
   popularityFactor,
   tasteFactor,
   trustFactor,
 } from '../src/search/rank';
 import { buildFtsQuery } from '../src/search/lexical';
 import { dot, packId, quantise, toSimilarity, unpackId, ID_WIDTH } from '../src/search/vector';
-import { parseCsv, parseCsvRows, parseGoogleMerchant, parseShopify, assertSafeUrl } from '../src/ingest/adapters';
+import {
+  assertSafeUrl,
+  fetchFeed,
+  parseCsv,
+  parseCsvRows,
+  parseGoogleMerchant,
+  parseShopify,
+  SHOPIFY_MAX_BYTES,
+  SHOPIFY_MAX_PAGE_REQUESTS,
+  SHOPIFY_PAGE_SIZE,
+} from '../src/ingest/adapters';
 import { normaliseItem, contentHash, embedText } from '../src/ingest/normalize';
-import { affiliateUrl } from '../src/routes/go';
 import { computeFacets, priceBandRange } from '../src/search/facets';
 import { toParsedQuery } from '../src/ai/provider';
-import type { ParsedQuery, Product, ResultItem } from '../src/types';
+import { rateIdentity, rateLimit, RULES } from '../src/lib/ratelimit';
+import { applyUrlFilters, validatedSearchParams } from '../src/routes/pages';
+import { drainStylistBuffer } from '../src/routes/api';
+import { filterRail, pagination, sortSelect } from '../src/ui/components';
+import type { Env, ParsedQuery, Product, ResultItem } from '../src/types';
 
 // ============================================================ util
 
@@ -382,7 +393,7 @@ function makeProduct(overrides: Partial<Product> = {}): Product {
     mrp: 300_000,
     currency: 'INR',
     url: 'https://example.in/p',
-    image_url: '/ph?s=x',
+    image_url: 'https://cdn.shopify.com/s/files/1/test/products/x.jpg',
     images: [],
     colors: ['blue'],
     sizes: ['s', 'm'],
@@ -442,10 +453,175 @@ describe('applyFilters', () => {
     expect(result.binding).toBe('price_max');
   });
 
-  it('keeps products with no size data rather than filtering them out', () => {
-    // Missing size data is a feed gap, not evidence the size is unavailable.
+  it('does not claim a size match when the listing has no size data', () => {
     const result = applyFilters([makeProduct({ sizes: [] })], { ...base, sizes: ['xxl'] });
-    expect(result.kept).toHaveLength(1);
+    expect(result.kept).toHaveLength(0);
+    expect(result.binding).toBe('sizes');
+  });
+
+  it('enforces every positive constraint field, including stable brand slugs', () => {
+    const matching = {
+      ...makeProduct({ id: 'matching' }),
+      brand_name: 'House One',
+      brand_slug: 'house-one',
+    };
+    const parse: ParsedQuery = {
+      ...base,
+      categories: ['kurtas'],
+      colors: ['blue'],
+      materials: ['cotton'],
+      occasions: ['casual'],
+      style_tags: ['minimal'],
+      sizes: ['m'],
+      brands: ['house-one'],
+      price_min: 100_000,
+      price_max: 300_000,
+    };
+    expect(applyFilters([matching], parse).kept.map((p) => p.id)).toEqual(['matching']);
+
+    const misses = [
+      { category: 'tops' },
+      { colors: ['red'] },
+      { materials: ['silk'] },
+      { occasions: ['wedding'] },
+      { style_tags: ['boho'] },
+      { sizes: ['xl'] },
+      { brand_slug: 'house-two', brand_name: 'House Two', brand_id: 'b2' },
+      { price: 900_000 },
+    ];
+    for (const [index, miss] of misses.entries()) {
+      expect(
+        applyFilters([{ ...matching, id: `miss-${index}`, ...miss }], parse).kept,
+        JSON.stringify(miss),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('ORs selections inside one facet group and ANDs across groups', () => {
+    const products = [
+      makeProduct({ id: 'cotton-blue', materials: ['cotton'], colors: ['blue'] }),
+      makeProduct({ id: 'linen-red', materials: ['linen'], colors: ['red'] }),
+      makeProduct({ id: 'silk-blue', materials: ['silk'], colors: ['blue'] }),
+      makeProduct({ id: 'linen-green', materials: ['linen'], colors: ['green'] }),
+    ];
+    const result = applyFilters(products, {
+      ...base,
+      materials: ['cotton', 'linen'],
+      colors: ['blue', 'red'],
+    });
+    expect(result.kept.map((p) => p.id)).toEqual(['cotton-blue', 'linen-red']);
+  });
+});
+
+describe('validated search state', () => {
+  it('caps and validates URL facets, sort, prices and brand slugs', () => {
+    const raw = new URLSearchParams();
+    raw.set('q', 'test');
+    for (const color of ['black', 'white', 'ivory', 'beige', 'brown', 'tan', 'grey', 'navy', 'blue']) {
+      raw.append('color', color);
+    }
+    raw.append('category', '<script>');
+    raw.set('brand', 'house-one');
+    raw.set('sort', 'DROP TABLE' as never);
+    raw.set('max', '2000oops');
+    raw.set('filters', '1');
+
+    const clean = validatedSearchParams(raw);
+    expect(clean.getAll('color')).toHaveLength(8);
+    expect(clean.has('category')).toBe(false);
+    expect(clean.get('brand')).toBe('house-one');
+    expect(clean.has('sort')).toBe(false);
+    expect(clean.has('max')).toBe(false);
+    expect(clean.get('filters')).toBe('1');
+  });
+
+  it('uses the explicit form marker so unchecking inferred facets really clears them', () => {
+    const base = {
+      ...heuristicParse('blue cotton kurta size m'),
+      brands: ['House One'],
+    };
+    const params = new URLSearchParams('q=x&filters=1&color=red');
+    const out = applyUrlFilters(base, params);
+    expect(out.colors).toEqual(['red']);
+    expect(out.categories).toEqual([]);
+    expect(out.materials).toEqual([]);
+    expect(out.occasions).toEqual([]);
+    expect(out.sizes).toEqual([]);
+    expect(out.brands).toEqual([]);
+  });
+
+  it('preserves the complete state in filter, sort and pagination controls', () => {
+    const active = new URLSearchParams(
+      'q=linen&filters=1&color=blue&brand=house-one&sort=price_desc&page=2&drop=size%3Am',
+    );
+    const facets = computeFacets([
+      { ...makeResultItem('a'), colors: ['blue'], brand_slug: 'house-one', brand_name: 'House One' },
+    ]);
+    const rail = filterRail(facets, 'linen', active, {
+      ...heuristicParse('linen'),
+      colors: ['blue'],
+      brands: ['house-one'],
+    });
+    expect(rail).toContain('class="mobile-filters"');
+    expect(rail).toContain('name="filters" value="1"');
+    expect(rail).toContain('name="sort" value="price_desc"');
+    expect(rail).toContain('name="color" value="blue" checked');
+
+    const sort = sortSelect('price_desc', 'linen', active);
+    expect(sort).toContain('name="color" value="blue"');
+    expect(sort).toContain('name="brand" value="house-one"');
+    expect(sort).not.toContain('name="page"');
+
+    const pager = pagination(2, true, '/search?q=linen&filters=1&color=blue&sort=price_desc');
+    expect(pager).toContain('color=blue');
+    expect(pager).toContain('sort=price_desc');
+    expect((pager.match(/q=linen/g) ?? [])).toHaveLength(2);
+  });
+});
+
+describe('stylist stream marker buffering', () => {
+  const source = 'Before [[SEARCH: cotton kurta]] after';
+
+  const consume = (chunks: string[]) => {
+    let pending = '';
+    const parts: { type: 'text' | 'search'; value: string }[] = [];
+    for (const chunk of chunks) {
+      pending += chunk;
+      const drained = drainStylistBuffer(pending);
+      pending = drained.pending;
+      parts.push(...drained.parts);
+    }
+    const final = drainStylistBuffer(pending, true);
+    parts.push(...final.parts);
+    return parts;
+  };
+
+  it('recognises a marker across every pair of chunk boundaries', () => {
+    for (let first = 0; first <= source.length; first++) {
+      for (let second = first; second <= source.length; second++) {
+        const parts = consume([
+          source.slice(0, first),
+          source.slice(first, second),
+          source.slice(second),
+        ]);
+        expect(parts.filter((p) => p.type === 'search').map((p) => p.value)).toEqual([
+          'cotton kurta',
+        ]);
+        expect(parts.filter((p) => p.type === 'text').map((p) => p.value).join('')).toBe(
+          'Before  after',
+        );
+      }
+    }
+  });
+
+  it('handles one-character chunks without leaking marker syntax', () => {
+    const parts = consume([...source]);
+    expect(parts.filter((p) => p.type === 'search').map((p) => p.value)).toEqual([
+      'cotton kurta',
+    ]);
+    expect(parts.filter((p) => p.type === 'text').map((p) => p.value).join('')).toBe(
+      'Before  after',
+    );
   });
 });
 
@@ -509,7 +685,7 @@ describe('matchReasons', () => {
 
 // ============================================================ ADR-10 invariant
 
-function makeResultItem(id: string, promoted = false): ResultItem {
+function makeResultItem(id: string): ResultItem {
   return {
     ...makeProduct({ id }),
     brand_name: 'Brand',
@@ -518,47 +694,8 @@ function makeResultItem(id: string, promoted = false): ResultItem {
     brand_ship_days: 3,
     score: 1,
     match_reasons: [],
-    promoted,
   };
 }
-
-describe('promoted placement invariant (ADR-10)', () => {
-  const organic = Array.from({ length: 24 }, (_, i) => makeResultItem(`o${i}`));
-
-  it('never exceeds the promoted cap', () => {
-    const promoted = Array.from({ length: 8 }, (_, i) => makeResultItem(`ad${i}`, true));
-    const out = injectPromoted(organic, promoted, 24);
-    expect(out.filter((i) => i.promoted)).toHaveLength(MAX_PROMOTED_PER_PAGE);
-  });
-
-  it('flags every promoted item so the renderer must label it', () => {
-    const out = injectPromoted(organic, [makeResultItem('ad0', true)], 24);
-    for (const item of out) {
-      const isAd = item.id.startsWith('ad');
-      expect(item.promoted).toBe(isAd);
-    }
-  });
-
-  it('never lets the page grow beyond perPage', () => {
-    const promoted = Array.from({ length: 4 }, (_, i) => makeResultItem(`ad${i}`, true));
-    expect(injectPromoted(organic, promoted, 24)).toHaveLength(24);
-  });
-
-  it('does not duplicate a product that is already organic', () => {
-    const out = injectPromoted(organic, [makeResultItem('o3', true)], 24);
-    expect(out.filter((i) => i.id === 'o3')).toHaveLength(1);
-  });
-
-  it('is a no-op with no campaigns', () => {
-    expect(injectPromoted(organic, [], 24)).toEqual(organic);
-  });
-
-  it('does not inject into a short result page beyond its length', () => {
-    const short = [makeResultItem('a'), makeResultItem('b')];
-    const out = injectPromoted(short, [makeResultItem('ad', true)], 24);
-    expect(out.length).toBeLessThanOrEqual(3);
-  });
-});
 
 // ============================================================ relaxations
 
@@ -708,6 +845,15 @@ describe('CSV parsing', () => {
 });
 
 describe('Shopify parsing', () => {
+  const product = (id: number) => ({
+    id,
+    handle: `item-${id}`,
+    title: `Cotton Kurta ${id}`,
+    product_type: 'Kurta',
+    variants: [{ price: '1999', available: true }],
+    images: [{ src: `https://cdn.shopify.com/item-${id}.jpg` }],
+  });
+
   it('takes the lowest variant price and highest compare-at as MRP', () => {
     const items = parseShopify(
       JSON.stringify({
@@ -752,6 +898,83 @@ describe('Shopify parsing', () => {
     );
     expect(items[0].availability).toBe('out_of_stock');
   });
+
+  it('fetches every Shopify products.json page and preserves existing query parameters', async () => {
+    const bodies = [
+      JSON.stringify({ products: Array.from({ length: SHOPIFY_PAGE_SIZE }, (_, i) => product(i + 1)) }),
+      JSON.stringify({ products: [product(SHOPIFY_PAGE_SIZE + 1)] }),
+    ];
+    const requested: URL[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const href =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(href);
+      requested.push(url);
+      const page = Number(url.searchParams.get('page'));
+      return new Response(bodies[page - 1] ?? JSON.stringify({ products: [] }));
+    });
+
+    try {
+      const result = await fetchFeed('https://brand.example.in/products.json?view=public', 'shopify');
+      expect(result.items).toHaveLength(SHOPIFY_PAGE_SIZE + 1);
+      expect(result.items.at(-1)?.external_id).toBe(String(SHOPIFY_PAGE_SIZE + 1));
+      expect(result.bytes).toBe(
+        bodies.reduce((sum, body) => sum + new TextEncoder().encode(body).byteLength, 0),
+      );
+      expect(requested).toHaveLength(2);
+      expect(requested[0].searchParams.get('view')).toBe('public');
+      expect(requested[0].searchParams.get('limit')).toBe(String(SHOPIFY_PAGE_SIZE));
+      expect(requested.map((url) => url.searchParams.get('page'))).toEqual(['1', '2']);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('refuses a partial catalogue when Shopify exceeds the fixed page/item budget', async () => {
+    const body = JSON.stringify({
+      products: Array.from({ length: SHOPIFY_PAGE_SIZE }, (_, i) => product(i + 1)),
+    });
+    let calls = 0;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls++;
+      return new Response(body);
+    });
+
+    try {
+      await expect(fetchFeed('https://brand.example.in/products.json', 'shopify')).rejects.toThrow(
+        'Shopify feed exceeds item limit',
+      );
+      expect(calls).toBe(SHOPIFY_MAX_PAGE_REQUESTS);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('enforces the aggregate byte budget across otherwise valid-sized pages', async () => {
+    const description = 'x'.repeat(8_000);
+    const body = JSON.stringify({
+      products: Array.from({ length: SHOPIFY_PAGE_SIZE }, (_, id) => ({
+        id,
+        body_html: description,
+        variants: [],
+      })),
+    });
+    const pageBytes = new TextEncoder().encode(body).byteLength;
+    let calls = 0;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      calls++;
+      return new Response(body);
+    });
+
+    try {
+      await expect(fetchFeed('https://brand.example.in/products.json', 'shopify')).rejects.toThrow(
+        'Shopify feed exceeds aggregate byte limit',
+      );
+      expect(calls).toBe(Math.floor(SHOPIFY_MAX_BYTES / pageBytes) + 1);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
 });
 
 describe('Google Merchant parsing', () => {
@@ -794,6 +1017,70 @@ describe('SSRF guard', () => {
     expect(assertSafeUrl('https://brand.example.in/products.json').hostname).toBe(
       'brand.example.in',
     );
+  });
+});
+
+describe('rate-limit identity', () => {
+  const fakeEnv = (): Env => {
+    const values = new Map<string, string>();
+    return {
+      CACHE: {
+        get: async (key: string) => values.get(key) ?? null,
+        put: async (key: string, value: string) => {
+          values.set(key, value);
+        },
+      },
+    } as unknown as Env;
+  };
+
+  it('uses Cloudflare client IP plus session and never trusts spoofable forwarded-for', () => {
+    const trusted = rateIdentity(
+      new Request('https://vestiq.in/api/search', {
+        headers: {
+          'cf-connecting-ip': '203.0.113.42',
+          'x-forwarded-for': '198.51.100.9',
+        },
+      }),
+      'session-1',
+    );
+    expect(trusted).toEqual({ ip: '203.0.113.42', session: 'session-1' });
+
+    const untrustedOnly = rateIdentity(
+      new Request('https://vestiq.in/api/search', {
+        headers: { 'x-forwarded-for': '198.51.100.9' },
+      }),
+      'session-2',
+    );
+    expect(untrustedOnly).toEqual({ ip: 'unknown', session: 'session-2' });
+  });
+
+  it('blocks cookie rotation at the shared IP budget', async () => {
+    const env = fakeEnv();
+    for (let i = 0; i < RULES.report.limit; i++) {
+      const result = await rateLimit(env, 'report', { ip: '203.0.113.10', session: `rotated-${i}` });
+      expect(result.ok).toBe(true);
+    }
+    const blocked = await rateLimit(env, 'report', {
+      ip: '203.0.113.10',
+      session: 'yet-another-cookie',
+    });
+    expect(blocked.ok).toBe(false);
+  });
+
+  it('retains the session budget when the client IP changes', async () => {
+    const env = fakeEnv();
+    for (let i = 0; i < RULES.report.limit; i++) {
+      const result = await rateLimit(env, 'report', {
+        ip: `203.0.113.${20 + i}`,
+        session: 'same-session',
+      });
+      expect(result.ok).toBe(true);
+    }
+    const blocked = await rateLimit(env, 'report', {
+      ip: '203.0.113.99',
+      session: 'same-session',
+    });
+    expect(blocked.ok).toBe(false);
   });
 });
 
@@ -880,6 +1167,69 @@ describe('contentHash', () => {
     expect(a).toBe(b);
     expect(a).not.toBe(c);
   });
+
+  it('changes for every persisted catalogue field, including long-tail shopper details', async () => {
+    const result = normaliseItem({
+      external_id: 'hash-1',
+      title: 'Cotton Kurta',
+      description: 'a'.repeat(250),
+      url: 'https://b.in/p',
+      image_url: 'https://b.in/i.jpg',
+      price_rupees: 1999,
+      product_type: 'Kurta',
+    });
+    if (!result.ok) throw new Error('fixture invalid');
+    const base = result.item;
+    const hash = await contentHash(base);
+    const mutations: Array<Partial<typeof base>> = [
+      { external_id: 'hash-2' },
+      { slug: 'changed-slug' },
+      { title: 'Changed Cotton Kurta' },
+      // The change is after character 200; the old truncated hash missed it.
+      { description: `${base.description!.slice(0, -1)}z` },
+      { category: 'dresses' },
+      { subcategory: 'long-kurtas' },
+      { gender: 'men' },
+      { price: base.price + 100 },
+      { mrp: 299_900 },
+      { url: 'https://b.in/p-new' },
+      { image_url: 'https://b.in/i-new.jpg' },
+      { images: [...base.images, 'https://b.in/i-2.jpg'] },
+      { colors: ['red'] },
+      { sizes: ['m'] },
+      { materials: [...base.materials, 'silk'] },
+      { occasions: ['wedding'] },
+      { style_tags: ['minimal'] },
+      { attributes: { sleeve: 'long' } },
+      { availability: 'out_of_stock' },
+    ];
+
+    for (const mutation of mutations) {
+      expect(await contentHash({ ...base, ...mutation })).not.toBe(hash);
+    }
+  });
+
+  it('canonicalises nested attribute key order', async () => {
+    const result = normaliseItem({
+      external_id: 'hash-order',
+      title: 'Cotton Kurta',
+      url: 'https://b.in/p',
+      image_url: 'https://b.in/i.jpg',
+      price_rupees: 1999,
+      product_type: 'Kurta',
+    });
+    if (!result.ok) throw new Error('fixture invalid');
+
+    const a = await contentHash({
+      ...result.item,
+      attributes: { fit: 'relaxed', measurements: { waist: 30, length: 42 } },
+    });
+    const b = await contentHash({
+      ...result.item,
+      attributes: { measurements: { length: 42, waist: 30 }, fit: 'relaxed' },
+    });
+    expect(a).toBe(b);
+  });
 });
 
 describe('embedText', () => {
@@ -897,29 +1247,6 @@ describe('embedText', () => {
     expect(text).toContain('Kaanchi');
     expect(text).toContain('cotton');
     expect(text.length).toBeLessThanOrEqual(1200);
-  });
-});
-
-// ============================================================ outbound links
-
-describe('affiliateUrl', () => {
-  it('returns the raw URL when no template is configured', () => {
-    expect(affiliateUrl('https://b.in/p', null)).toBe('https://b.in/p');
-  });
-
-  it('substitutes into a template', () => {
-    expect(affiliateUrl('https://b.in/p', 'https://track.example/?u={url}')).toBe(
-      'https://track.example/?u=https%3A%2F%2Fb.in%2Fp',
-    );
-  });
-
-  it('ignores a template that is not a valid https URL', () => {
-    expect(affiliateUrl('https://b.in/p', 'javascript:alert(1){url}')).toBe('https://b.in/p');
-    expect(affiliateUrl('https://b.in/p', 'not a url {url}')).toBe('https://b.in/p');
-  });
-
-  it('ignores a template with no placeholder', () => {
-    expect(affiliateUrl('https://b.in/p', 'https://track.example/')).toBe('https://b.in/p');
   });
 });
 

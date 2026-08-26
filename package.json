@@ -11,26 +11,28 @@
   "scripts": {
     "dev": "wrangler dev",
     "build:client": "node scripts/build-client.mjs",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "npm run build:client && playwright test",
     "db:migrate:local": "node scripts/migrate.mjs --local",
     "db:migrate": "node scripts/migrate.mjs --remote",
-    "seed:local": "node scripts/seed.mjs --local",
-    "seed": "node scripts/seed.mjs --remote",
     "embed": "node scripts/embed.mjs",
     "deploy": "npm run build:client && wrangler deploy",
     "tail": "wrangler tail",
     "check:budget": "node scripts/check-budget.mjs",
-    "verify": "npm run typecheck && npm run test && npm run check:budget"
+    "verify": "npm run typecheck && npm run test && npm run test:e2e && npm run check:budget"
   },
   "dependencies": {
     "hono": "^4.13.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@cloudflare/vitest-pool-workers": "^0.21.3",
     "@cloudflare/workers-types": "^5.20260817.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",

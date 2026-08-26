@@ -1,4 +1,4 @@
-import type { ParsedQuery, Product, Relaxation, ResultItem, SessionData } from '../types';
+import type { ParsedQuery, Product, Relaxation, SessionData } from '../types';
 import { formatINR, unique } from '../lib/util';
 import { label } from '../ai/lexicon';
 import type { LexicalHit } from './lexical';
@@ -8,7 +8,7 @@ import type { VectorHit } from './vector';
  * Fusion, filtering and ranking.
  *
  * Split into pure functions with no I/O so ranking behaviour is directly
- * testable — including the promoted-slot invariant from ADR-10.
+ * testable without database or network I/O.
  */
 
 /** Reciprocal Rank Fusion constant. 60 is the value from the original TREC work
@@ -91,6 +91,20 @@ export interface FilterOutcome {
   removedBy: Record<string, number>;
 }
 
+type FilterableProduct = Product & {
+  brand_name?: string;
+  brand_slug?: string;
+};
+
+/** Brand filters arrive either as parser-provided names or URL-stable slugs/ids. */
+function brandKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 /**
  * Hard constraints, applied after recall.
  *
@@ -98,7 +112,10 @@ export interface FilterOutcome {
  * binding when the result set collapses — that report is what makes the zero-
  * result state actionable instead of a dead end (U-design §6).
  */
-export function applyFilters(products: Product[], parse: ParsedQuery): FilterOutcome {
+export function applyFilters<T extends FilterableProduct>(
+  products: T[],
+  parse: ParsedQuery,
+): FilterOutcome & { kept: T[] } {
   const removedBy: Record<string, number> = {};
   const bump = (k: string) => {
     removedBy[k] = (removedBy[k] ?? 0) + 1;
@@ -117,11 +134,49 @@ export function applyFilters(products: Product[], parse: ParsedQuery): FilterOut
       bump('gender');
       return false;
     }
+    if (parse.categories.length && !parse.categories.includes(p.category)) {
+      bump('categories');
+      return false;
+    }
+    if (parse.colors.length && !parse.colors.some((color) => p.colors.includes(color))) {
+      bump('colors');
+      return false;
+    }
+    if (
+      parse.materials.length &&
+      !parse.materials.some((material) => p.materials.includes(material))
+    ) {
+      bump('materials');
+      return false;
+    }
+    if (
+      parse.occasions.length &&
+      !parse.occasions.some((occasion) => p.occasions.includes(occasion))
+    ) {
+      bump('occasions');
+      return false;
+    }
+    if (
+      parse.style_tags.length &&
+      !parse.style_tags.some((style) => p.style_tags.includes(style))
+    ) {
+      bump('style_tags');
+      return false;
+    }
+    if (parse.brands.length) {
+      const productBrands = new Set(
+        [p.brand_id, p.brand_slug ?? '', p.brand_name ?? ''].map(brandKey).filter(Boolean),
+      );
+      if (!parse.brands.some((brand) => productBrands.has(brandKey(brand)))) {
+        bump('brands');
+        return false;
+      }
+    }
     if (parse.exclude_colors.length && p.colors.some((c) => parse.exclude_colors.includes(c))) {
       bump('exclude_colors');
       return false;
     }
-    if (parse.sizes.length && p.sizes.length) {
+    if (parse.sizes.length) {
       const wanted = parse.sizes.map((s) => s.toLowerCase());
       if (!p.sizes.some((s) => wanted.includes(s.toLowerCase()))) {
         bump('sizes');
@@ -336,38 +391,4 @@ export function buildRelaxations(parse: ParsedQuery, raw: string, binding: strin
   }
 
   return out.slice(0, 3);
-}
-
-// ---------------------------------------------------------------- promoted
-
-/**
- * ADR-10 invariant: promoted results never exceed `maxPromoted` per page and are
- * always flagged so the renderer can label them. Enforced here, in one place,
- * and covered by a test — ranking integrity is the whole business asset.
- */
-export const PROMOTED_SLOTS = [2, 11] as const;
-export const MAX_PROMOTED_PER_PAGE = 2;
-
-export function injectPromoted(
-  organic: ResultItem[],
-  promoted: ResultItem[],
-  perPage: number,
-): ResultItem[] {
-  if (!promoted.length) return organic;
-
-  const out = [...organic];
-  const seen = new Set(organic.map((p) => p.id));
-  const usable = promoted.filter((p) => !seen.has(p.id)).slice(0, MAX_PROMOTED_PER_PAGE);
-
-  let inserted = 0;
-  for (const slot of PROMOTED_SLOTS) {
-    if (inserted >= usable.length) break;
-    // Never insert past the end of the page — a promoted item on page 2 was not
-    // paid for on page 1.
-    if (slot > out.length || slot >= perPage) break;
-    out.splice(slot, 0, { ...usable[inserted], promoted: true });
-    inserted++;
-  }
-
-  return out.slice(0, perPage);
 }

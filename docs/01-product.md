@@ -2,7 +2,7 @@
 
 > Role: Founder / Head of Product
 > Date: 2026-08-18
-> Status: approved for build
+> Status: amended for a free, real-catalogue-only launch on 2026-08-23
 
 ---
 
@@ -56,8 +56,8 @@ Honest critique, i.e. what I would attack if I were competing:
 | **Trust gap on the hop-out** | Sending a shopper to an unknown 40-SKU store is scary. Is it real? Will it ship? Return policy? | **Merchant trust score** surfaced inline: domain age, policy presence, ship-time, dispute rate. This is a durable moat and a data asset. |
 | **Freshness/accuracy of the long tail** | Small stores go out of stock and stale constantly. A dead link kills trust permanently. | Aggressive **liveness re-crawl** on click-hot SKUs + `last_verified_at` shown to user. Never rank an unverified-in-7-days item on page 1. |
 | **Zero retention loop** | Pure search = zero reason to return. Google is one tab away. | **Wardrobe + saved intents + price/restock alerts.** The alert is the retention primitive: it converts a search into an owned, recurring touchpoint. |
-| **Cold-start on taste** | The first query has no personalisation, so results feel generic. | 20-second **taste onboarding** (visual A/B on 8 pairs) → a taste vector that biases rank from query one. |
-| **Monetisation is single-track** | Affiliate only, and affiliate on tiny D2C stores is fragile (many have no program). | Three tracks: affiliate CPA, **merchant self-serve promoted placement (CPC)**, and a **brand analytics subscription**. See §6. |
+| **Cold-start on taste** | The first query has no personalisation, so results feel generic. | **Reference opportunity, deferred in Vestiq's launch scope:** a visual taste-onboarding flow could later produce a bounded ranking preference. |
+| **Commercial ranking erodes trust** | Paid placement makes relevance harder to believe, especially while the catalogue is young. | The launch is free for shoppers and brands, with no affiliate wrapping, subscriptions, campaign budgets, payouts, or promoted results. |
 | **No SEO harvest** | An AI search box is client-side and invisible to Google. Yet "co-ord set for goa vacation under 3000" is *exactly* a long-tail search query. | Every query result page is **server-rendered, indexable, JSON-LD marked up**, with programmatic collection pages. This is the cheapest acquisition channel that exists for this product. |
 
 That last one is the single biggest strategic difference in our build and it drives the
@@ -121,65 +121,71 @@ Constraint-first, not browse-first.
 Spending ₹40k/mo on Meta ads at a CAC that doesn't work. Cannot get on Myntra's front page.
 *Job:* "Put my clothes in front of people who are already asking for exactly what I make."
 
-P2 is who pays us. P0/P1 are who we serve. Never confuse the two.
+P0/P1 are the shopper audience and P2 supplies the catalogue. Nobody pays Vestiq
+during launch; ranking must be earned only through relevance and trust.
 
 ---
 
-## 4. Use cases → functional map
+## 4. Use cases → launch-status map
 
-Every use case below maps to a shipped surface. `→` names the implementing route.
+This section separates the current free-launch surface from the roadmap. A route
+or schema primitive is not counted as a shipped shopper feature unless there is
+a reachable user journey for it.
+
+Status key: **Shipped** = reachable launch journey; **Partial** = a narrower,
+honest version ships; **Deferred** = not advertised as available.
 
 ### 4.1 Search & discovery (the core loop)
 
-| # | Use case | Example input | Implementation |
+| # | Use case | Status | Launch implementation |
 | --- | --- | --- | --- |
-| U1 | **Mood search** | "quiet luxury but for 25°C" | NL parser → attribute + semantic vector → `/search` |
-| U2 | **Occasion search** | "beach wedding guest, not white" | occasion lexicon + negation handling → `/search` |
-| U3 | **Constraint search** | "kitten heels under ₹4000, size 39" | hard filters (price/size/colour) applied *after* semantic recall → `/search` |
-| U4 | **Styling-problem search** | "what goes with wide-leg olive trousers" | intent classified as `styling_problem` → complementary-category expansion → `/search` |
-| U5 | **Brand-reference search** | "something like Sabyasachi but ₹5k" | brand → style-vector lookup → nearest-neighbour in price band → `/search` |
-| U6 | **Image search** | screenshot upload | vision → structured attributes + vector → `/search?img=` |
-| U7 | **Refine without retyping** | chips: cheaper / longer / cotton / no print | query delta applied to prior parse, preserved in URL → `/search` |
-| U8 | **Explain the match** | "why is this here?" | per-result `match_reasons[]` rendered as chips |
+| U1 | **Mood search** | Shipped | NL parse + lexical/structured recall and semantic recall when an active vector index exists → `/search` |
+| U2 | **Occasion search** | Shipped | occasion lexicon + negation handling → `/search` |
+| U3 | **Constraint search** | Shipped | validated price/size/colour/material/brand filters enforced after recall → `/search` |
+| U4 | **Styling-problem search** | Shipped | `styling_problem` intent maps known garment categories to complementary categories → `/search` |
+| U5 | **Brand-reference search** | Partial | exact indexed-brand constraints work; “in the style of” brand cloning is deferred |
+| U6 | **Image search** | Shipped | upload → vision-derived text query → shareable `/search?q=…` redirect |
+| U7 | **Refine without retyping** | Shipped | removable parse chips, facets, sorting and pagination preserve validated URL state |
+| U8 | **Explain the match** | Shipped | per-result `match_reasons[]` rendered as chips |
 
 ### 4.2 The stylist (depth)
 
-| # | Use case | Implementation |
-| --- | --- | --- |
-| U9 | Multi-turn consult ("packing 5 days Goa, ₹10k total") | `/stylist` — streaming chat, tool-calls into our own search |
-| U10 | Build a full look around one item | look-builder tool → complementary slots (top/bottom/shoe/bag) |
-| U11 | Budget allocation across a look | constrained optimiser over candidate sets |
-| U12 | Save consult as a shoppable lookbook | persists to `/looks/:id`, public + shareable |
+| # | Use case | Status | Launch implementation |
+| --- | --- | --- | --- |
+| U9 | Multi-turn consult ("packing 5 days Goa, ₹10k total") | Shipped | `/stylist` streams chat and inserts product-search grids |
+| U10 | Build a full look around one item | Deferred | No look-builder route or slot optimiser ships at launch |
+| U11 | Budget allocation across a look | Deferred | No multi-item budget optimiser ships at launch |
+| U12 | Save consult as a shoppable lookbook | Deferred | No `/looks/:id` route or shareable lookbook ships at launch |
 
 ### 4.3 Retention (the part the reference product is missing)
 
-| # | Use case | Implementation |
-| --- | --- | --- |
-| U13 | Wishlist / wardrobe | `/wardrobe`, anonymous-first (cookie), survives sign-in merge |
-| U14 | **Price-drop alert** | cron diffs price → notify |
-| U15 | **Back-in-stock alert** | cron diffs availability → notify |
-| U16 | **Saved intent** ("standing order") | saved query re-run nightly; "6 new matches" digest |
-| U17 | Taste onboarding | 8 visual pairs → taste vector → rank bias |
-| U18 | Daily drops feed | `/drops` — new arrivals from followed + taste-matched brands |
+| # | Use case | Status | Launch implementation |
+| --- | --- | --- | --- |
+| U13 | Wishlist / wardrobe | Shipped | `/wardrobe`, bound to the anonymous browser session; shopper sign-in and account-state merge are deferred |
+| U14 | **Price-drop alert** | Shipped | scheduled price comparison; anonymous shoppers provide an email when arming |
+| U15 | **Back-in-stock alert** | Shipped | scheduled availability comparison with the same alert delivery path |
+| U16 | **Saved intent** ("standing order") | Deferred in public UI | API/job substrate exists, but there is no launch control or email digest journey, so it is not advertised |
+| U17 | Taste onboarding | Deferred | a bounded taste-ranking helper and internal endpoint exist, but no shopper onboarding UI ships |
+| U18 | Daily drops feed | Partial | `/drops` is a generic newest-first catalogue; followed-brand and personalised drops are deferred |
 
 ### 4.4 Trust (the moat)
 
 | # | Use case | Implementation |
 | --- | --- | --- |
 | U19 | Merchant trust score | computed nightly; shown on every card + PDP |
-| U20 | Liveness guarantee | `last_verified_at`; stale items demoted, dead items hidden |
-| U21 | Transparent commercial disclosure | promoted items labelled; affiliate disclosure in footer + PDP |
-| U22 | Report a bad listing | one tap → `vestiq_reports` → auto-demote at threshold |
+| U20 | Liveness guarantee | feed/liveness timestamps drive age-based freshness and stale status; shopper reports go to moderation and do not automatically delist a product |
+| U21 | Transparent free-service disclosure | no Vestiq fee or paid ranking; checkout remains on the brand's own site |
+| U22 | Report a bad listing | one tap → `vestiq_reports` → admin moderation queue |
 
-### 4.5 Supply side (revenue)
+### 4.5 Supply side
 
 | # | Use case | Implementation |
 | --- | --- | --- |
 | U23 | Brand self-onboard | `/merchant/signup` → feed URL (Shopify JSON / GMC / CSV) |
 | U24 | Feed health dashboard | `/merchant` — rows in/out, rejects with reasons |
 | U25 | Demand analytics | queries that matched them, queries that *nearly* matched (gap report) |
-| U26 | Promoted placement | budget, CPC bid, capped share-of-page |
-| U27 | Payout/commission ledger | click → conversion → commission reconciliation |
+| U26 | Free feed controls | update a feed URL or format and queue a sync; feed pause is deferred |
+| U27 | Free catalogue insights | search demand and feed-quality reporting without a paid plan |
 
 ### 4.6 SEO / growth
 
@@ -212,22 +218,16 @@ Stated so scope stays honest:
 
 ---
 
-## 6. Monetisation
+## 6. Free launch policy
 
-| Track | Mechanic | Realistic economics |
-| --- | --- | --- |
-| **T1 Affiliate CPA** | Tracked hop-out; 8–15% commission on Indian D2C | AOV ₹2,200 × 10% = **₹220/order**. At 2% click→order on 50k clicks/mo = 1,000 orders = **₹2.2L/mo** |
-| **T2 Promoted placement (CPC)** | Merchant self-serve, ₹4–12/click, hard-capped at 2 of 24 slots, always labelled | 50k clicks/mo × 8% promoted × ₹7 = **₹28k/mo**, ~100% margin |
-| **T3 Brand intelligence (SaaS)** | ₹4,999/mo: demand data, gap report ("312 searches you nearly matched"), competitor share-of-voice | 40 brands = **₹2L/mo**, highest margin, stickiest |
+- Shoppers pay Vestiq nothing and see no paywall or Vestiq checkout.
+- Brands pay Vestiq nothing for onboarding, feeds, demand insights, or listing.
+- Outbound links are direct brand URLs without affiliate wrapping.
+- There are no subscriptions, promoted results, CPC budgets, commissions, or payouts.
+- Product prices remain visible because purchases happen independently on each brand's site.
 
-T2 and T3 are why the supply-side portal is in v1 and not "later" — they are the only
-revenue lines we fully control. Guardrail: **promoted results never exceed 2/24 slots and
-are always visually labelled.** Ranking integrity is the entire asset; renting it out
-cheaply is how this business dies.
-
-**Cost per 1,000 searches:** ~₹0 infra on Cloudflare free tier at launch; the only variable
-cost is inference, held to ~₹0.02/search by aggressive parse-caching (§ADR-6). Contribution
-margin is ~99% — this is a distribution business, not an infra business.
+Future monetisation is explicitly out of launch scope and requires a new product,
+legal, and ranking-integrity review before any implementation is reintroduced.
 
 ---
 
@@ -248,7 +248,7 @@ punishes clickbait ranking, which a raw-CTR north star would reward.
 | Retention | Alerts armed / active user | > 1.5 |
 | Supply | Live SKUs | 100k |
 | Supply | Feed freshness p95 | < 24h |
-| Revenue | Tracked GMV / mo | ₹20L by mo 6 |
+| Supply | Approved active brands | 50 by mo 6 |
 | Health | Search p95 latency | < 800ms |
 | Health | Dead-link rate on page 1 | < 0.5% |
 
@@ -263,7 +263,7 @@ weekly. That queue *is* the roadmap — it tells us exactly which supply to go s
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
 | Merchants refuse feeds | High | Zero-effort onboarding: paste a Shopify URL, we auto-derive `products.json`. No dev work required from them. |
-| Affiliate programs absent on small D2C | High | Direct 10% revenue-share agreements + T2/T3 which need no affiliate program at all |
+| Free launch has no direct revenue | Medium | Treat monetisation as a later product decision; do not compromise ranking or onboarding while validating demand |
 | Inference cost per search | Medium | Parse-cache on normalised query hash; ~70% hit rate at steady state |
 | Google penalises programmatic pages | Medium | Only generate a collection page when ≥12 genuinely matching live SKUs exist; `noindex` otherwise |
 | Big marketplace ships the same feature | Medium | They cannot: ranking the long tail cannibalises their own ad revenue. Classic incumbent conflict. |

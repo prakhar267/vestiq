@@ -221,22 +221,49 @@ export function normaliseItem(raw: RawItem): NormaliseResult {
  * write budget on a daily full-catalogue resync.
  */
 export async function contentHash(item: NormalisedItem): Promise<string> {
-  const material = JSON.stringify([
-    item.title,
-    item.price,
-    item.mrp,
-    item.availability,
-    item.image_url,
-    item.colors,
-    item.sizes,
-    item.category,
-    item.description?.slice(0, 200) ?? '',
-  ]);
+  // Keep this list aligned with every NormalisedItem column persisted by the
+  // upserter. In particular, a destination URL or secondary-image change must
+  // not be mistaken for an unchanged product: both are directly shopper-facing.
+  // Object keys are canonicalised so equivalent `attributes` objects hash the
+  // same way regardless of insertion order.
+  const material = stableJson({
+    external_id: item.external_id,
+    slug: item.slug,
+    title: item.title,
+    description: item.description,
+    category: item.category,
+    subcategory: item.subcategory,
+    gender: item.gender,
+    price: item.price,
+    mrp: item.mrp,
+    url: item.url,
+    image_url: item.image_url,
+    images: item.images,
+    colors: item.colors,
+    sizes: item.sizes,
+    materials: item.materials,
+    occasions: item.occasions,
+    style_tags: item.style_tags,
+    attributes: item.attributes,
+    availability: item.availability,
+  });
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material));
   return [...new Uint8Array(buf)]
     .slice(0, 16)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object)
+    .filter((key) => object[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+    .join(',')}}`;
 }
 
 /** Text fed to the embedding model. Concrete and visual — see PARSE_SYSTEM_PROMPT. */

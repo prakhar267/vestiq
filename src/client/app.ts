@@ -95,6 +95,7 @@ function initSearchBar(bar: HTMLElement): void {
   const close = () => {
     panel.hidden = true;
     input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
     activeIndex = -1;
   };
 
@@ -124,8 +125,13 @@ function initSearchBar(bar: HTMLElement): void {
       group('Popular', data.trending.map((q) => ({ label: q, href: `/search?q=${encodeURIComponent(q)}` }))) +
       group('Brands', data.brands.map((b) => ({ label: b.name, href: `/brand/${b.slug}` })));
 
+    $$<HTMLButtonElement>('button[role="option"]', panel).forEach((option, index) => {
+      option.id = `${input.id || 'search'}-option-${index}`;
+    });
+
     panel.hidden = false;
     input.setAttribute('aria-expanded', 'true');
+    input.removeAttribute('aria-activedescendant');
     activeIndex = -1;
   };
 
@@ -170,7 +176,12 @@ function initSearchBar(bar: HTMLElement): void {
       options.forEach((opt, i) =>
         opt.setAttribute('aria-selected', i === activeIndex ? 'true' : 'false'),
       );
-      if (activeIndex >= 0) options[activeIndex].scrollIntoView({ block: 'nearest' });
+      if (activeIndex >= 0) {
+        input.setAttribute('aria-activedescendant', options[activeIndex].id);
+        options[activeIndex].scrollIntoView({ block: 'nearest' });
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
     } else if (e.key === 'Escape') {
       close();
     }
@@ -244,6 +255,17 @@ function initSaves(root: ParentNode = document): void {
         toast("Couldn't save that — try again.");
       } else {
         toast(nowSaved ? 'Saved' : 'Removed');
+        if (!nowSaved && location.pathname === '/wardrobe') {
+          const card = btn.closest<HTMLElement>('.card');
+          const grid = card?.parentElement;
+          card?.remove();
+          if (grid && !grid.querySelector('.card')) {
+            const empty = document.createElement('p');
+            empty.className = 'muted';
+            empty.textContent = 'Nothing saved yet. Tap the heart on anything you like.';
+            grid.replaceWith(empty);
+          }
+        }
       }
     });
   }
@@ -253,28 +275,73 @@ function initSaves(root: ParentNode = document): void {
 
 function initAlerts(): void {
   for (const btn of $$<HTMLButtonElement>('[data-alert]')) {
+    if (btn.dataset.bound) continue;
+    btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
       const productId = btn.dataset.alert!;
       const kind = btn.dataset.kind ?? 'price_drop';
+      const markArmed = () => {
+        btn.setAttribute('aria-pressed', 'true');
+        const label = $<HTMLElement>('span', btn);
+        if (label) label.textContent = 'Alert set';
+        toast('Alert set — we’ll email you.');
+      };
+
+      const collectEmail = () => {
+        const dialog = document.createElement('dialog');
+        const titleId = `alert-title-${productId}`;
+        const helpId = `alert-help-${productId}`;
+        dialog.setAttribute('aria-labelledby', titleId);
+        dialog.style.cssText =
+          'border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s5);max-width:420px;background:var(--surface);color:var(--ink)';
+        dialog.innerHTML = `<form>
+          <h3 id="${escapeHtml(titleId)}" style="margin-bottom:var(--s2)">Where should we notify you?</h3>
+          <p id="${escapeHtml(helpId)}" class="tiny" style="margin-bottom:var(--s4)">We only use this address for the alert you requested.</p>
+          <label for="alert-email" class="eyebrow">Email address</label>
+          <input id="alert-email" name="email" type="email" autocomplete="email" required
+            aria-describedby="${escapeHtml(helpId)}" style="width:100%;margin-top:var(--s2)">
+          <p data-alert-error role="alert" class="tiny" style="min-height:1.4em;margin-top:var(--s2)"></p>
+          <div style="display:flex;gap:var(--s2);margin-top:var(--s4)">
+            <button class="btn btn-sm" type="button" data-cancel>Cancel</button>
+            <button class="btn btn-primary btn-sm" type="submit">Set alert</button>
+          </div>
+        </form>`;
+        document.body.appendChild(dialog);
+        const form = $<HTMLFormElement>('form', dialog)!;
+        const email = $<HTMLInputElement>('input[type="email"]', dialog)!;
+        const error = $<HTMLElement>('[data-alert-error]', dialog)!;
+        const submit = $<HTMLButtonElement>('button[type="submit"]', dialog)!;
+        $<HTMLButtonElement>('[data-cancel]', dialog)?.addEventListener('click', () => dialog.close());
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          if (!form.reportValidity()) return;
+          submit.disabled = true;
+          error.textContent = '';
+          const armed = await postJson<{ ok: boolean }>('/api/alert', {
+            product_id: productId,
+            kind,
+            email: email.value.trim(),
+          });
+          if (armed?.ok) {
+            markArmed();
+            dialog.close();
+          } else {
+            error.textContent = "We couldn't set that alert. Please try again.";
+            submit.disabled = false;
+          }
+        });
+        dialog.addEventListener('close', () => dialog.remove(), { once: true });
+        dialog.showModal();
+        email.focus();
+      };
+
       const res = await postJson<{ ok: boolean; needs_email: boolean }>('/api/alert', {
         product_id: productId,
         kind,
       });
-      if (!res?.ok) {
-        toast("Couldn't set that alert.");
-        return;
-      }
-      if (res.needs_email) {
-        const email = prompt('Where should we email you when this changes?');
-        if (email && email.includes('@')) {
-          await postJson('/api/alert', { product_id: productId, kind, email });
-          toast('Alert set — we’ll email you.');
-        } else {
-          toast('Alert saved to this browser.');
-        }
-      } else {
-        toast('Alert set.');
-      }
+      if (res?.needs_email) collectEmail();
+      else if (res?.ok) markArmed();
+      else toast("Couldn't set that alert.");
     });
   }
 }
@@ -333,7 +400,34 @@ function initChips(): void {
   for (const btn of $$<HTMLButtonElement>('[data-drop]')) {
     btn.addEventListener('click', () => {
       const url = new URL(location.href);
-      url.searchParams.append('drop', btn.dataset.drop!);
+      const drop = btn.dataset.drop!;
+      const split = drop.indexOf(':');
+      const kind = split === -1 ? drop : drop.slice(0, split);
+      const value = split === -1 ? '' : drop.slice(split + 1);
+      const paramByKind: Record<string, string> = {
+        category: 'category',
+        color: 'color',
+        material: 'material',
+        occasion: 'occasion',
+        style: 'style',
+        size: 'size',
+        brand: 'brand',
+      };
+      const explicitParam = paramByKind[kind];
+      if (explicitParam) {
+        const remaining = url.searchParams
+          .getAll(explicitParam)
+          .filter((candidate) => candidate !== value);
+        url.searchParams.delete(explicitParam);
+        for (const candidate of remaining) url.searchParams.append(explicitParam, candidate);
+      }
+      if (kind === 'price_min' || kind === 'price_max') {
+        url.searchParams.delete(kind === 'price_min' ? 'min' : 'max');
+        url.searchParams.delete('price_band');
+      }
+      if (!url.searchParams.getAll('drop').includes(drop)) {
+        url.searchParams.append('drop', drop);
+      }
       url.searchParams.delete('page');
       location.href = url.toString();
     });
@@ -360,9 +454,12 @@ function initInfiniteScroll(): void {
     if (loading || exhausted) return;
     loading = true;
     try {
-      const res = await fetch(
-        `/api/search?format=html&q=${encodeURIComponent(query)}&page=${page + 1}${location.search.replace(/^\?/, '&')}`,
-      );
+      const next = new URL('/api/search', location.origin);
+      next.search = location.search;
+      next.searchParams.set('format', 'html');
+      next.searchParams.set('q', query);
+      next.searchParams.set('page', String(page + 1));
+      const res = await fetch(next.pathname + next.search);
       if (!res.ok) throw new Error('failed');
       const data = (await res.json()) as { html: string; has_more: boolean };
       if (data.html.trim()) {

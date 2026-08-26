@@ -1,5 +1,5 @@
 import { SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { env, migrate, seedBrand, seedProduct } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-token-at-least-16-chars';
@@ -137,10 +137,11 @@ describe('GET /', () => {
     expect(html).toContain('rel="canonical"');
   });
 
-  it('renders the affiliate disclosure', async () => {
+  it('renders the free-launch purchase disclosure without monetisation claims', async () => {
     const html = await (await SELF.fetch('http://localhost/')).text();
-    expect(html).toMatch(/commission/i);
-    expect(html).toMatch(/Promoted/);
+    expect(html).toContain('free for shoppers and brands during launch');
+    expect(html).toContain("purchases happen on each brand's own website");
+    expect(html).not.toMatch(/commission|paid placement|promoted/i);
   });
 });
 
@@ -335,7 +336,7 @@ describe('lexical (FTS5) arm', () => {
 
 describe('GET /api/search', () => {
   it('returns JSON with the parse and items', async () => {
-    const res = await SELF.fetch('http://localhost/api/search?q=cotton%20kurta');
+    const res = await SELF.fetch('http://localhost/api/search?q=cotton');
     expect(res.status).toBe(200);
     const body = await res.json<{ items: unknown[]; parse: { intent: string }; total: number }>();
     expect(body.total).toBeGreaterThan(0);
@@ -367,7 +368,11 @@ describe('GET /p/:handle', () => {
     expect(html).toContain('"priceCurrency":"INR"');
     expect(html).toContain('"BreadcrumbList"');
     expect(html).toContain(`/go/${kurtaId}`);
-    expect(html).toContain('rel="nofollow sponsored noopener"');
+    // `sponsored` would be a false declaration to search engines: the free launch
+    // has no affiliate or paid relationship with the brand.
+    expect(html).toContain('rel="nofollow noopener"');
+    expect(html).not.toContain('sponsored');
+    expect(html).toMatch(/View on\s+Kaanchi/);
   });
 
   it('redirects a stale slug to the canonical URL', async () => {
@@ -475,7 +480,10 @@ describe('POST /api/save', () => {
 // ============================================================ alerts
 
 describe('POST /api/alert', () => {
-  it('arms a price-drop alert', async () => {
+  it('refuses to arm an alert with no delivery channel', async () => {
+    // An anonymous shopper has no email on file, and an armed alert the
+    // dispatcher could never notify is worse than no alert: the shopper believes
+    // they are being watched for. So the API asks for an address instead.
     const res = await SELF.fetch('http://localhost/api/alert', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -483,8 +491,44 @@ describe('POST /api/alert', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json<{ ok: boolean; needs_email: boolean }>();
-    expect(body.ok).toBe(true);
+    expect(body.ok).toBe(false);
     expect(body.needs_email).toBe(true);
+
+    const row = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM vestiq_alerts WHERE product_id = ?',
+    )
+      .bind(kurtaId)
+      .first<{ n: number }>();
+    expect(Number(row?.n)).toBe(0);
+  });
+
+  it('arms a price-drop alert once an email is supplied', async () => {
+    const res = await SELF.fetch('http://localhost/api/alert', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        product_id: kurtaId,
+        kind: 'price_drop',
+        email: 'shopper@example.in',
+        target_rupees: 1500,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ ok: boolean; needs_email: boolean }>();
+    expect(body.ok).toBe(true);
+    expect(body.needs_email).toBe(false);
+
+    const row = await env.DB.prepare(
+      `SELECT kind, status, email, target_price, base_price
+       FROM vestiq_alerts WHERE product_id = ?`,
+    )
+      .bind(kurtaId)
+      .first<{ kind: string; status: string; email: string; target_price: number; base_price: number }>();
+    expect(row?.status).toBe('armed');
+    expect(row?.email).toBe('shopper@example.in');
+    // Rupees in, paise stored.
+    expect(row?.target_price).toBe(150_000);
+    expect(row?.base_price).toBe(199_900);
   });
 
   it('rejects an invalid alert kind', async () => {
@@ -671,6 +715,25 @@ describe('SEO', () => {
     expect(xml).toContain(kurtaId);
   });
 
+  it('excludes hidden products and products owned by inactive brands', async () => {
+    const inactiveBrand = await seedBrand({
+      name: 'Inactive Sitemap Label',
+      slug: 'inactive-sitemap-label',
+      status: 'inactive',
+    });
+    const inactiveProduct = await seedProduct(inactiveBrand, {
+      title: 'Inactive Brand Sitemap Coat',
+    });
+    const hiddenProduct = await seedProduct(brandId, {
+      title: 'Hidden Sitemap Coat',
+      status: 'hidden',
+    });
+
+    const xml = await (await SELF.fetch('http://localhost/sitemap-products/1.xml')).text();
+    expect(xml).not.toContain(inactiveProduct);
+    expect(xml).not.toContain(hiddenProduct);
+  });
+
   it('excludes non-indexable collections from the sitemap', async () => {
     await env.DB.prepare(
       `INSERT OR REPLACE INTO vestiq_collections
@@ -688,15 +751,8 @@ describe('SEO', () => {
     expect((await SELF.fetch('http://localhost/manifest.webmanifest')).status).toBe(200);
   });
 
-  it('renders a deterministic placeholder image', async () => {
-    const a = await SELF.fetch('http://localhost/ph?s=abc');
-    expect(a.headers.get('content-type')).toContain('image/svg+xml');
-    const first = await a.text();
-    const second = await (await SELF.fetch('http://localhost/ph?s=abc')).text();
-    const other = await (await SELF.fetch('http://localhost/ph?s=different')).text();
-
-    expect(first).toBe(second);
-    expect(other).not.toBe(first);
+  it('does not expose the old invented placeholder endpoint', async () => {
+    expect((await SELF.fetch('http://localhost/ph?s=abc')).status).toBe(404);
   });
 });
 
@@ -714,6 +770,27 @@ describe('/img proxy', () => {
     ).toBe(400);
     expect((await SELF.fetch('http://localhost/img?u=not-a-url')).status).toBe(400);
     expect((await SELF.fetch('http://localhost/img')).status).toBe(400);
+  });
+
+  it('refuses redirects from an allowlisted image host to an unsafe destination', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://evil.example/redirected-tracker.png' },
+      }),
+    );
+
+    try {
+      const target = 'https://cdn.shopify.com/unsafe-redirect-regression.png';
+      const res = await SELF.fetch(
+        `http://localhost/img?u=${encodeURIComponent(target)}`,
+      );
+      expect(res.status).toBe(403);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });
 

@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS vestiq_brands (
   return_days       INTEGER,
   has_return_policy INTEGER NOT NULL DEFAULT 0,
   affiliate_network TEXT,
-  affiliate_rate_bp INTEGER NOT NULL DEFAULT 1000,    -- basis points (1000 = 10%)
-  affiliate_tmpl    TEXT,                             -- URL template, {url} placeholder
+  affiliate_rate_bp INTEGER NOT NULL DEFAULT 0,       -- disabled in free-launch mode
+  affiliate_tmpl    TEXT,                             -- retained for schema compatibility
   product_count     INTEGER NOT NULL DEFAULT 0,
   status            TEXT NOT NULL DEFAULT 'active',   -- active|pending|suspended
   created_at        INTEGER NOT NULL,

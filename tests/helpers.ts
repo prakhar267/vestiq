@@ -137,7 +137,7 @@ export async function seedBrand(
       (id, slug, name, domain, city, country, price_tier, style_tags, trust_score,
        ship_days, return_days, has_return_policy, affiliate_rate_bp, product_count,
        status, created_at, updated_at)
-     VALUES (?,?,?,?,?, 'IN', 'mid', '[]', ?, 4, 14, 1, 1000, 0, ?, ?, ?)`,
+     VALUES (?,?,?,?,?, 'IN', 'mid', '[]', ?, 4, 14, 1, 0, 0, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -170,6 +170,8 @@ export async function seedProduct(
   const materials = opts.materials ?? ['cotton'];
   const occasions = opts.occasions ?? ['casual'];
   const styleTags = opts.styleTags ?? ['minimal'];
+  const imageUrl =
+    'https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=900&q=80';
 
   await env.DB.prepare(
     `INSERT OR REPLACE INTO vestiq_products
@@ -191,8 +193,8 @@ export async function seedProduct(
       opts.price ?? 199_900,
       opts.mrp === undefined ? 299_900 : opts.mrp,
       `https://example.in/products/${slug}`,
-      `/ph?s=${slug}`,
-      JSON.stringify([`/ph?s=${slug}`]),
+      imageUrl,
+      JSON.stringify([imageUrl]),
       JSON.stringify(colors),
       JSON.stringify(opts.sizes ?? ['s', 'm', 'l']),
       JSON.stringify(materials),

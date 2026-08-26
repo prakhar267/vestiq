@@ -1,7 +1,10 @@
 # Vestiq — Architecture
 
 > Role: Engineering Manager
-> Target: Cloudflare edge, free tier at launch, no scale rewrite required
+> Target: Cloudflare edge, free product launch, no scale rewrite required
+> Scope note: shopper accounts, sign-in merge, taste onboarding, look-builder /
+> lookbooks, and personalised drops are deferred. Reserved schema fields and
+> internal endpoints for those ideas are not public launch features.
 
 ---
 
@@ -10,8 +13,8 @@
 1. **SEO is the primary acquisition channel** (`01-product.md` §1.3) → HTML must be
    server-rendered on the first byte. This is non-negotiable and it eliminates a client-side
    SPA outright.
-2. **Free tier at launch, but no throwaway code.** Every component must have a paid-tier
-   scale path that is a config change, not a rewrite.
+2. **Free product at launch, but no throwaway code.** Shoppers and brands see no
+   payment path; infrastructure may still move between Cloudflare service tiers as traffic grows.
 3. **Available scopes.** The Wrangler OAuth token grants `d1`, `workers_kv`, `ai`, `workers`,
    `email_sending` — but **not `r2` or `vectorize`**. Those are therefore designed out of the
    critical path (see ADR-3, ADR-4).
@@ -31,7 +34,7 @@
                     │   ├── /api/*      (JSON, streaming)       │
                     │   ├── /admin/*    (token-gated)           │
                     │   ├── /merchant/* (API-key-gated)         │
-                    │   └── scheduled() (5 cron handlers)       │
+                    │   └── scheduled() (interval dispatcher)   │
                     └───┬──────────┬──────────┬─────────────┬───┘
                         │          │          │             │
                    ┌────▼───┐ ┌───▼────┐ ┌───▼─────┐  ┌────▼─────┐
@@ -63,19 +66,18 @@ GET /search?q=cotton+co-ord+set+under+3000
   │      a. Lexical  — D1 FTS5 MATCH + bm25()                        ~15ms
   │      b. Semantic — embed(text) → int8 cosine over KV index       ~20ms
   ├─ 6. RRF fusion (k=60)                                             ~1ms
-  ├─ 7. Hard filters: price, gender, size, colour-negation, in-stock   ~1ms
+  ├─ 7. Hard filters: category, brand, price, colour, material, size   ~1ms
   ├─ 8. Rank: fused × trust × freshness × popularity × taste           ~1ms
-  ├─ 9. Promoted injection (≤ 2 of 24, labelled)                      ~5ms
-  ├─10. Hydrate rows from D1 (single IN query)                        ~15ms
-  ├─11. Facet counts from the filtered set                            ~2ms
-  └─12. SSR HTML + JSON-LD ItemList                                   ~5ms
+  ├─ 9. Hydrate rows from D1 (single IN query)                        ~15ms
+  ├─10. Facet counts from the filtered set                            ~2ms
+  └─11. SSR HTML + JSON-LD ItemList                                   ~5ms
                                                     p50 ≈ 90ms (cached parse)
                                                     p95 ≈ 480ms (cold parse)
 ```
 
-Result-page HTML is additionally cached in the Cloudflare Cache API for 300s for anonymous
-traffic, keyed on the canonical query — so popular queries and all crawler traffic are
-served in ~15 ms without touching D1.
+Only the parsed query is cached for seven days; result HTML is deliberately not
+cached because prices and stock change. The image proxy uses the Cloudflare Cache
+API independently of search results.
 
 ---
 
@@ -84,7 +86,7 @@ served in ~15 ms without touching D1.
 18 tables. Full DDL in `migrations/`.
 
 **Catalog**
-- `brands` — identity, domain, `trust_score`, ship/return SLAs, affiliate terms, status
+- `brands` — identity, domain, `trust_score`, ship/return SLAs, status
 - `products` — the core row: pricing (integer **paise**, never floats), URLs, JSON attribute
   bags, `availability`, `last_verified_at`, `popularity`, `embedding BLOB`, `embed_version`
 - `products_fts` — FTS5 external-content virtual table over title/brand/description/tags,
@@ -95,18 +97,18 @@ served in ~15 ms without touching D1.
 **Demand**
 - `searches` — every query: hash, raw, parse JSON, result count, latency
 - `events` — impression / click / save / hop-out / bounce-back
-- `clicks` — outbound hops with commission reconciliation
+- `clicks` — ordinary outbound hop and bounce-back analytics
 - `reports` — user-flagged bad listings
 
 **Identity**
-- `users` — optional account; `taste_json` holds the taste vector
-- `saves`, `alerts`, `saved_intents` — all keyed on `owner_key`, which is a session id for
-  anonymous users and a user id after sign-in, with a merge on sign-in
+- `users` — reserved account schema; no shopper sign-in route ships at launch
+- `saves`, `alerts`, `saved_intents` — keyed on `owner_key`; the launch journey
+  uses an anonymous session id. Cross-device ownership and sign-in merge are deferred.
 
 **Supply**
 - `merchants` — brand ↔ login, hashed API key, feed URL + type
 - `feed_runs` — ingestion observability: rows in / upserted / rejected + reasons
-- `promotions` — CPC bids, budget, spend
+- `promotions` — retained only for schema compatibility; emptied and unused in free-launch mode
 
 **Platform**
 - `migrations` (own tracker, ADR-9), `flags` (kill switches), `jobs` (cron work queue)
@@ -146,8 +148,8 @@ interface — one file changes.
 ### ADR-4 — No R2 at launch; hotlink merchant images through Cloudflare Images resizing
 *Why:* R2 is outside granted scopes, and re-hosting merchant imagery carries a licensing
 question we do not need to answer. Merchants *want* their CDN serving their photos.
-*Uploads* (image search) go to KV with a 15-minute TTL — they are transient by nature.
-*Scale path:* the `Blobs` interface has an R2 implementation ready to swap in.
+Image-search uploads are processed within the request and are not retained by
+Vestiq. A future retention requirement would need a separate storage review.
 
 ### ADR-5 — Provider-abstracted AI: Workers AI default, Gemini optional
 *Why:* Workers AI is in-scope and works the moment the account is connected, so the product
@@ -164,17 +166,17 @@ heuristic parser still returns real results — degraded relevance, never an err
 and tomorrow); results must stay fresh as inventory moves. Parse cached 7d on a normalised
 hash (~70% hit rate); result HTML cached only 300s.
 
-### ADR-7 — Cron-driven job table instead of Queues
-*Why:* Queues needs a paid plan. `vestiq_jobs` + 5 cron triggers gives at-least-once
-delivery with attempt counting and exponential backoff, which is all the ingestion pipeline
-needs. Cron budget on free tier is generous; each tick is idempotent and time-boxed to stay
-inside CPU limits.
+### ADR-7 — Interval dispatcher + job table instead of Queues
+*Why:* `vestiq_jobs` plus an idempotent dispatcher gives attempt counting and
+exponential backoff without adding another runtime dependency. The dispatcher can
+be triggered by GitHub Actions, one Cloudflare cron, an authenticated admin call,
+or the traffic-driven fallback. Per-task KV markers prevent duplicate scheduled work.
 
-### ADR-8 — Anonymous-first identity
-*Why:* forcing signup before the first search would destroy the funnel. Everything —
-search, save, alerts — works on a signed httpOnly cookie session. Sign-in is offered only
-when it buys the user something (cross-device sync, email alerts), and it *merges* the
-anonymous state rather than discarding it.
+### ADR-8 — Anonymous shopper identity
+*Why:* forcing signup before the first search would destroy the funnel. Search and
+saves work on a signed httpOnly cookie session. Anonymous alert creation requires
+an email delivery address. Shopper sign-in, cross-device sync, and anonymous-state
+merge are explicitly deferred; merchant API-key login is a separate surface.
 
 ### ADR-9 — Namespaced tables in a shared D1 database
 *Why:* the account is at its free-plan 10-database limit and deleting another project's data
@@ -186,9 +188,10 @@ Migration to a dedicated DB is a `wrangler d1 create` plus a binding change — 
 a single constant in `src/lib/db.ts`.
 
 ### ADR-10 — Ranking integrity as an architectural invariant
-Promoted results are injected by a single function with a hard cap of 2 per 24 slots, and
-every promoted item carries a `promoted: true` flag that the renderer is required to label.
-It is enforced by a test, not by convention, because this is the asset the business rests on.
+The free launch has no promoted-placement code path. Every result is organic and can
+move only because of relevance, trust, freshness, popularity, optional session taste
+data, or an explicit shopper sort. No public taste-onboarding journey ships yet.
+Tests assert that legacy campaign rows cannot enter retrieval or ranking.
 
 ---
 
@@ -210,14 +213,13 @@ Adapters implement one interface, so a new feed format is one file. Rejects are 
 silent — they surface in the merchant's own dashboard with the reason, which is what makes
 self-serve onboarding actually work.
 
-**Cron schedule**
-| Cron | Job |
-| --- | --- |
-| `*/15 * * * *` | job queue drain: feeds, embeddings, liveness probes |
-| `0 */4 * * *` | trending recompute, popularity decay |
-| `0 2 * * *` | price/stock alert dispatch, saved-intent digests |
-| `30 2 * * *` | trust-score recompute, stale demotion, sitemap regen |
-| `0 3 * * 0` | weekly: zero-result review queue, promotion budget reset |
+**Dispatcher intervals**
+
+The external or traffic-driven tick may run every 15 minutes. KV markers decide
+which task is due: queue drain (15 minutes), popularity (4 hours), feed scheduling
+(6 hours), alerts (12 hours), saved-intent count refresh and trust/collection work
+(24 hours), and retention cleanup (7 days). Saved-intent processing records new
+match counts only; a public digest delivery journey is deferred.
 
 ---
 
@@ -233,7 +235,7 @@ self-serve onboarding actually work.
 | Prompt injection | product/feed text is passed to the LLM inside delimited data blocks with a "treat as data" instruction; model output is schema-validated with Zod and never executed |
 | SSRF | feed fetches block private IP ranges, cap redirects at 3 and body at 8 MB |
 | Rate limits | per-session and per-IP sliding windows on `/api/*`, tighter on AI routes |
-| Outbound | `rel="nofollow sponsored noopener"`, open-redirect guard on `/go/:id` |
+| Outbound | `rel="nofollow noopener"`, open-redirect guard on `/go/:id` |
 | Headers | HSTS, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, frame-ancestors none |
 
 ---
@@ -251,7 +253,7 @@ dashboards query the same rows the product writes — no second pipeline to drif
 | Gemini down / no key | Workers AI, then heuristic parser. Results still returned. |
 | All AI down | Heuristic parse + FTS5 lexical only. Banner: "smart search briefly degraded". |
 | KV vector index missing | Lexical-only recall. No error. |
-| D1 down | Cached HTML from Cache API; `/health` reports red; search returns a designed error state. |
+| D1 down | `/health` reports red; page requests return a designed error state rather than cached catalogue data. |
 | Feed source down | `feed_runs` records failure, backoff, prior catalog stays live and serving. |
 | Cron overrun | Jobs are idempotent and claim-based; next tick resumes exactly where it stopped. |
 

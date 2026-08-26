@@ -102,7 +102,7 @@ export function rowToBrand(r: Record<string, unknown>): Brand {
       r.return_days === null || r.return_days === undefined ? null : Number(r.return_days),
     has_return_policy: Number(r.has_return_policy ?? 0),
     affiliate_network: (r.affiliate_network as string) ?? null,
-    affiliate_rate_bp: Number(r.affiliate_rate_bp ?? 1000),
+    affiliate_rate_bp: Number(r.affiliate_rate_bp ?? 0),
     affiliate_tmpl: (r.affiliate_tmpl as string) ?? null,
     product_count: Number(r.product_count ?? 0),
     status: String(r.status ?? 'active'),

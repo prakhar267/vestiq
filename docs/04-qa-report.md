@@ -160,13 +160,9 @@ successful injection still cannot introduce a value we don't recognise.
 
 ## 4. Business-rule tests
 
-The ranking-integrity invariant (ADR-10) is enforced by tests, not convention:
-
-- promoted results never exceed 2 per page, whatever the campaign count;
-- every promoted item carries `promoted: true` so the renderer must label it;
-- a promoted item already present organically is not duplicated;
-- promoted injection never grows the page beyond `perPage`;
-- promoted slots are page-1 and relevance-sort only.
+The free-launch ranking invariant (ADR-10) is enforced by tests: no paid campaign
+can enter result retrieval, change ordering, or create a charge. Product prices
+belong to external brand stores and are not Vestiq payment options.
 
 Also asserted: unisex stock is valid for gendered queries; products with no size
 data are kept rather than filtered out (a feed gap is not evidence of absence);
@@ -185,8 +181,6 @@ range is normalised rather than producing a filter that can only match nothing.
 3. **Facet counts are computed over the candidate pool**, not the whole corpus.
 4. **Rate limiting is approximate** — KV is eventually consistent, so a client
    spread across colos can briefly exceed a budget. Documented in `ratelimit.ts`.
-5. **Seed catalogue images are generated placeholders** (`/ph`), because we hold
-   no licence for stock photography. Real feeds carry real images.
-6. **`vestiq_events` has a UNIQUE constraint** used for idempotent inserts; two
+5. **`vestiq_events` has a UNIQUE constraint** used for idempotent inserts; two
    genuinely distinct events in the same millisecond, session, product and
    position collapse into one. Acceptable for analytics.

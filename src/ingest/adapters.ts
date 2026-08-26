@@ -14,6 +14,18 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const FETCH_TIMEOUT_MS = 20_000;
 
+/**
+ * Public Shopify feeds expose at most 250 products per page. Keep catalogue
+ * ingestion deliberately bounded: the final request is an empty-page probe so
+ * a catalogue of exactly 5,000 products is accepted, while a larger catalogue
+ * fails as a whole instead of being silently truncated (which would make the
+ * upserter mark unseen products out of stock).
+ */
+export const SHOPIFY_PAGE_SIZE = 250;
+export const SHOPIFY_MAX_ITEMS = 5_000;
+export const SHOPIFY_MAX_PAGE_REQUESTS = Math.ceil(SHOPIFY_MAX_ITEMS / SHOPIFY_PAGE_SIZE) + 1;
+export const SHOPIFY_MAX_BYTES = 32 * 1024 * 1024;
+
 /** Hostnames that must never be fetched, even though Workers can't reach most. */
 const BLOCKED_HOST = /^(localhost|.*\.local|.*\.internal|metadata\..*|169\.254\..*|10\..*|127\..*|192\.168\..*|172\.(1[6-9]|2\d|3[01])\..*|\[?::1\]?|0\.0\.0\.0)$/i;
 
@@ -27,15 +39,19 @@ export function assertSafeUrl(raw: string): URL {
   return url;
 }
 
-export async function safeFetch(raw: string): Promise<string> {
+interface SafeFetchResult {
+  body: string;
+  bytes: number;
+}
+
+async function safeFetchResult(raw: string): Promise<SafeFetchResult> {
   let current = assertSafeUrl(raw);
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
     try {
-      res = await fetch(current.toString(), {
+      const res = await fetch(current.toString(), {
         redirect: 'manual',
         signal: controller.signal,
         headers: {
@@ -43,30 +59,36 @@ export async function safeFetch(raw: string): Promise<string> {
           'user-agent': 'VestiqBot/1.0 (+https://vestiq.in/for-brands)',
         },
       });
+
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) throw new Error(`redirect with no location (${res.status})`);
+        // Re-validate every hop — a redirect into a private address is the classic
+        // SSRF bypass.
+        current = assertSafeUrl(new URL(location, current).toString());
+        continue;
+      }
+
+      if (!res.ok) throw new Error(`feed fetch failed: ${res.status}`);
+
+      const declared = parseInt(res.headers.get('content-length') ?? '0', 10);
+      if (declared > MAX_BODY_BYTES) throw new Error('feed too large');
+
+      // Enforce the cap even when content-length is absent or lies. Keep the
+      // abort timer active while consuming the body too; fetch() resolving does
+      // not mean a hostile server has finished sending it.
+      const buf = await readCapped(res, MAX_BODY_BYTES);
+      return { body: new TextDecoder().decode(buf), bytes: buf.byteLength };
     } finally {
       clearTimeout(timer);
     }
-
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get('location');
-      if (!location) throw new Error(`redirect with no location (${res.status})`);
-      // Re-validate every hop — a redirect into a private address is the classic
-      // SSRF bypass.
-      current = assertSafeUrl(new URL(location, current).toString());
-      continue;
-    }
-
-    if (!res.ok) throw new Error(`feed fetch failed: ${res.status}`);
-
-    const declared = parseInt(res.headers.get('content-length') ?? '0', 10);
-    if (declared > MAX_BODY_BYTES) throw new Error('feed too large');
-
-    // Enforce the cap even when content-length is absent or lies.
-    const buf = await readCapped(res, MAX_BODY_BYTES);
-    return new TextDecoder().decode(buf);
   }
 
   throw new Error('too many redirects');
+}
+
+export async function safeFetch(raw: string): Promise<string> {
+  return (await safeFetchResult(raw)).body;
 }
 
 async function readCapped(res: Response, max: number): Promise<Uint8Array> {
@@ -118,12 +140,23 @@ interface ShopifyProduct {
   options?: { name?: string; values?: string[] }[];
 }
 
+function shopifyProducts(body: string): ShopifyProduct[] {
+  const data = JSON.parse(body) as { products?: unknown };
+  if (!Array.isArray(data?.products)) return [];
+  return data.products.filter(
+    (product): product is ShopifyProduct => Boolean(product) && typeof product === 'object',
+  );
+}
+
 /** Shopify's public `/products.json`. Paginated 250 at a time. */
 export function parseShopify(body: string, storeOrigin: string): RawItem[] {
-  const data = JSON.parse(body) as { products?: ShopifyProduct[] };
+  return parseShopifyProducts(shopifyProducts(body), storeOrigin);
+}
+
+function parseShopifyProducts(products: ShopifyProduct[], storeOrigin: string): RawItem[] {
   const out: RawItem[] = [];
 
-  for (const p of data.products ?? []) {
+  for (const p of products) {
     const variants = p.variants ?? [];
     const prices = variants
       .map((v) => parseFloat(v.price ?? ''))
@@ -171,6 +204,40 @@ export function parseShopify(body: string, storeOrigin: string): RawItem[] {
   }
 
   return out;
+}
+
+async function fetchShopifyFeed(feedUrl: string): Promise<{ items: RawItem[]; bytes: number }> {
+  const feed = assertSafeUrl(feedUrl);
+  const items: RawItem[] = [];
+  let bytes = 0;
+  let productsSeen = 0;
+
+  for (let page = 1; page <= SHOPIFY_MAX_PAGE_REQUESTS; page++) {
+    const pageUrl = new URL(feed);
+    pageUrl.searchParams.set('limit', String(SHOPIFY_PAGE_SIZE));
+    pageUrl.searchParams.set('page', String(page));
+
+    const fetched = await safeFetchResult(pageUrl.toString());
+    bytes += fetched.bytes;
+    if (bytes > SHOPIFY_MAX_BYTES) throw new Error('Shopify feed exceeds aggregate byte limit');
+
+    const products = shopifyProducts(fetched.body);
+    if (products.length > SHOPIFY_PAGE_SIZE) {
+      throw new Error('Shopify feed page exceeds item limit');
+    }
+    if (productsSeen + products.length > SHOPIFY_MAX_ITEMS) {
+      throw new Error('Shopify feed exceeds item limit');
+    }
+
+    items.push(...parseShopifyProducts(products, feed.origin));
+    productsSeen += products.length;
+
+    if (products.length < SHOPIFY_PAGE_SIZE) return { items, bytes };
+  }
+
+  // The loop can only exhaust when the empty-page probe itself returned a full
+  // page. Refuse the partial catalogue rather than delisting unseen products.
+  throw new Error('Shopify feed exceeds page limit');
 }
 
 // ---------------------------------------------------------------- google merchant
@@ -340,14 +407,13 @@ export async function fetchFeed(
   feedUrl: string,
   feedType: FeedType,
 ): Promise<{ items: RawItem[]; bytes: number }> {
-  const body = await safeFetch(feedUrl);
-  const origin = new URL(feedUrl).origin;
+  if (feedType === 'shopify') return fetchShopifyFeed(feedUrl);
+
+  const fetched = await safeFetchResult(feedUrl);
+  const body = fetched.body;
 
   let items: RawItem[];
   switch (feedType) {
-    case 'shopify':
-      items = parseShopify(body, origin);
-      break;
     case 'gmc':
       items = parseGoogleMerchant(body);
       break;
@@ -358,5 +424,5 @@ export async function fetchFeed(
       throw new Error(`unknown feed type: ${feedType}`);
   }
 
-  return { items, bytes: body.length };
+  return { items, bytes: fetched.bytes };
 }

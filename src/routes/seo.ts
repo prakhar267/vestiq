@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../types';
 import { T } from '../lib/db';
 import { esc } from '../lib/util';
+import { assertSafeUrl } from '../ingest/adapters';
 
 /**
  * SEO surfaces, the image proxy, and OG images.
@@ -13,6 +14,7 @@ import { esc } from '../lib/util';
 export const seoRoutes = new Hono<{ Bindings: Env }>();
 
 const SITEMAP_PAGE_SIZE = 5000;
+const MAX_IMAGE_REDIRECTS = 3;
 
 seoRoutes.get('/robots.txt', (c) => {
   const base = c.env.SITE_URL.replace(/\/$/, '');
@@ -43,7 +45,10 @@ seoRoutes.get('/sitemap.xml', async (c) => {
   let productPages = 1;
   try {
     const row = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM ${T.products} WHERE status = 'active'`,
+      `SELECT COUNT(*) AS n
+       FROM ${T.products} p
+       JOIN ${T.brands} b ON b.id = p.brand_id
+       WHERE p.status = 'active' AND b.status = 'active'`,
     ).first<{ n: number }>();
     productPages = Math.max(1, Math.ceil((row?.n ?? 0) / SITEMAP_PAGE_SIZE));
   } catch {
@@ -138,8 +143,11 @@ seoRoutes.get('/sitemap-products/:page', async (c) => {
   if (!/^\d+$/.test(raw)) return c.notFound();
   const page = Math.max(1, parseInt(raw, 10) || 1);
   const res = await c.env.DB.prepare(
-    `SELECT id, slug, updated_at FROM ${T.products}
-     WHERE status = 'active' ORDER BY id LIMIT ? OFFSET ?`,
+    `SELECT p.id, p.slug, p.updated_at
+     FROM ${T.products} p
+     JOIN ${T.brands} b ON b.id = p.brand_id
+     WHERE p.status = 'active' AND b.status = 'active'
+     ORDER BY p.id LIMIT ? OFFSET ?`,
   )
     .bind(SITEMAP_PAGE_SIZE, (page - 1) * SITEMAP_PAGE_SIZE)
     .all<{ id: string; slug: string; updated_at: number }>();
@@ -248,26 +256,43 @@ seoRoutes.get('/img', async (c) => {
   if (target.protocol !== 'https:') return c.text('https only', 400);
 
   const allowed = await allowedImageHosts(c.env);
-  const host = target.hostname.toLowerCase();
-  const ok = allowed.has(host) || [...allowed].some((h) => host.endsWith('.' + h));
-  if (!ok) return c.text('host not allowed', 403);
+  if (!isAllowedImageTarget(target, allowed)) return c.text('host not allowed', 403);
 
   const cacheKey = new Request(new URL(c.req.url).toString(), { method: 'GET' });
   const cache = caches.default;
   const hit = await cache.match(cacheKey);
   if (hit) return hit;
 
-  const upstream = await fetch(target.toString(), {
-    headers: { accept: 'image/*', 'user-agent': 'VestiqImageProxy/1.0 (+https://vestiq.in)' },
-    redirect: 'follow',
-    // Cloudflare image resizing, applied when the zone has Images enabled and
-    // silently ignored otherwise (workers.dev). The cast is needed because
-    // `cf.image` is a request-transform option that workers-types models only on
-    // inbound requests.
-    cf: { image: { width, fit: 'scale-down', quality: 82, format: 'auto' } },
-  } as unknown as RequestInit);
+  let current = target;
+  let upstream: Response | undefined;
+  for (let hop = 0; hop <= MAX_IMAGE_REDIRECTS; hop++) {
+    if (!isAllowedImageTarget(current, allowed)) return c.text('host not allowed', 403);
 
-  if (!upstream.ok) return c.text('upstream error', 502);
+    upstream = await fetch(current.toString(), {
+      headers: { accept: 'image/*', 'user-agent': 'VestiqImageProxy/1.0 (+https://vestiq.in)' },
+      // Redirects are handled manually so an allowlisted CDN cannot bounce the
+      // proxy to an attacker-controlled or private destination.
+      redirect: 'manual',
+      // Cloudflare image resizing, applied when the zone has Images enabled and
+      // silently ignored otherwise (workers.dev). The cast is needed because
+      // `cf.image` is a request-transform option that workers-types models only on
+      // inbound requests.
+      cf: { image: { width, fit: 'scale-down', quality: 82, format: 'auto' } },
+    } as unknown as RequestInit);
+
+    if (upstream.status < 300 || upstream.status >= 400) break;
+    if (hop === MAX_IMAGE_REDIRECTS) return c.text('too many redirects', 502);
+
+    const location = upstream.headers.get('location');
+    if (!location) return c.text('bad upstream redirect', 502);
+    try {
+      current = new URL(location, current);
+    } catch {
+      return c.text('bad upstream redirect', 502);
+    }
+  }
+
+  if (!upstream?.ok) return c.text('upstream error', 502);
   const type = upstream.headers.get('content-type') ?? '';
   if (!type.startsWith('image/')) return c.text('not an image', 415);
 
@@ -281,6 +306,19 @@ seoRoutes.get('/img', async (c) => {
   c.executionCtx.waitUntil(cache.put(cacheKey, res.clone()));
   return res;
 });
+
+function isAllowedImageTarget(target: URL, allowed: Set<string>): boolean {
+  if (target.username || target.password) return false;
+  try {
+    // Applies the same private-network/IP-literal SSRF guard as feed fetching.
+    assertSafeUrl(target.toString());
+  } catch {
+    return false;
+  }
+
+  const host = target.hostname.toLowerCase();
+  return allowed.has(host) || [...allowed].some((allowedHost) => host.endsWith('.' + allowedHost));
+}
 
 /** Hosts we will proxy images from: every onboarded brand's own domain. */
 async function allowedImageHosts(env: Env): Promise<Set<string>> {
@@ -317,49 +355,6 @@ async function allowedImageHosts(env: Env): Promise<Set<string>> {
   }
   return hosts;
 }
-
-/**
- * Deterministic placeholder image renderer.
- *
- * Seed/demo catalogue rows point here instead of hotlinking stock photography we
- * have no licence for. Real merchant feeds carry real image URLs, which go
- * through /img instead. Output is a stable function of the seed, so a product's
- * placeholder never changes between loads.
- */
-seoRoutes.get('/ph', (c) => {
-  const seed = (c.req.query('s') ?? 'vestiq').slice(0, 60);
-  const w = Math.min(1200, Math.max(64, parseInt(c.req.query('w') ?? '480', 10) || 480));
-  const h = Math.round(w * (4 / 3));
-
-  // FNV-1a — small, stable, and good enough to spread hues.
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < seed.length; i++) {
-    hash ^= seed.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  const hue = hash % 360;
-  const hue2 = (hue + 25 + (hash >> 8) % 40) % 360;
-  const sat = 12 + ((hash >> 16) % 16);
-  const light = 78 + ((hash >> 20) % 10);
-  const variant = hash % 3;
-
-  const shape =
-    variant === 0
-      ? `<circle cx="${w / 2}" cy="${h * 0.44}" r="${w * 0.26}" fill="hsl(${hue2} ${sat + 8}% ${light - 12}%)"/>`
-      : variant === 1
-        ? `<rect x="${w * 0.22}" y="${h * 0.2}" width="${w * 0.56}" height="${h * 0.52}" fill="hsl(${hue2} ${sat + 8}% ${light - 12}%)"/>`
-        : `<path d="M${w * 0.5} ${h * 0.16} L${w * 0.8} ${h * 0.72} L${w * 0.2} ${h * 0.72} Z" fill="hsl(${hue2} ${sat + 8}% ${light - 12}%)"/>`;
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-    <rect width="${w}" height="${h}" fill="hsl(${hue} ${sat}% ${light}%)"/>
-    ${shape}
-  </svg>`;
-
-  return c.body(svg, 200, {
-    'content-type': 'image/svg+xml; charset=utf-8',
-    'cache-control': 'public, max-age=2592000, immutable',
-  });
-});
 
 seoRoutes.get('/favicon.svg', (c) =>
   c.body(

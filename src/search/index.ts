@@ -19,7 +19,6 @@ import {
   applyFilters,
   buildRelaxations,
   fuse,
-  injectPromoted,
   matchReasons,
   scoreItem,
   toArms,
@@ -52,8 +51,6 @@ export interface SearchOptions {
   brandId?: string;
   since?: number;
   logger?: Logger;
-  /** Skip promoted injection — used by the stylist and internal callers. */
-  noPromoted?: boolean;
   includeScoreParts?: boolean;
   /**
    * Degradation signals collected before search() was called — notably from
@@ -194,64 +191,6 @@ async function hydrate(
   return out;
 }
 
-/**
- * Candidate promoted items for this query (T2 revenue).
- * Only campaigns with remaining budget, matching the query's categories.
- */
-async function fetchPromoted(env: Env, parse: ParsedQuery): Promise<ResultItem[]> {
-  const now = Date.now();
-  const conditions: string[] = [
-    `pr.status = 'active'`,
-    `pr.spent_paise < pr.budget_paise`,
-    `pr.starts_at <= ?`,
-    `(pr.ends_at IS NULL OR pr.ends_at >= ?)`,
-    `p.status = 'active'`,
-    `p.availability != 'out_of_stock'`,
-  ];
-  const binds: unknown[] = [now, now];
-
-  if (parse.categories.length) {
-    conditions.push(`p.category IN (${inClause(parse.categories.length)})`);
-    binds.push(...parse.categories);
-  }
-  if (parse.price_max !== undefined) {
-    conditions.push('p.price <= ?');
-    binds.push(parse.price_max);
-  }
-
-  const sql = `
-    SELECT ${PRODUCT_COLUMNS}, pr.bid_paise AS bid
-    FROM ${T.promotions} pr
-    JOIN ${T.products} p ON (pr.product_id = p.id OR (pr.product_id IS NULL AND p.brand_id = pr.brand_id))
-    JOIN ${T.brands} b ON b.id = p.brand_id
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY pr.bid_paise DESC
-    LIMIT 8
-  `;
-
-  try {
-    const res = await env.DB.prepare(sql)
-      .bind(...binds)
-      .all<Record<string, unknown>>();
-    return (res.results ?? []).map((row) => ({
-      ...rowToProduct(row),
-      brand_name: String(row.brand_name),
-      brand_slug: String(row.brand_slug),
-      brand_trust: Number(row.brand_trust ?? 50),
-      brand_ship_days:
-        row.brand_ship_days === null || row.brand_ship_days === undefined
-          ? null
-          : Number(row.brand_ship_days),
-      score: 0,
-      match_reasons: [],
-      promoted: true,
-    }));
-  } catch {
-    // Promoted placement is revenue, not correctness — never fail a search for it.
-    return [];
-  }
-}
-
 export async function search(env: Env, opts: SearchOptions): Promise<SearchResponse> {
   const started = Date.now();
   const degraded: string[] = [];
@@ -344,7 +283,6 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
       ...row,
       score,
       match_reasons: matchReasons(row, parse),
-      promoted: false,
       ...(opts.includeScoreParts ? { score_parts: parts } : {}),
     };
   });
@@ -360,16 +298,9 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   const total = scored.length;
   const facets = computeFacets(scored);
 
-  // --- page slice + promoted ----------------------------------------------
+  // --- page slice ----------------------------------------------------------
   const offset = (page - 1) * perPage;
-  let items = scored.slice(offset, offset + perPage);
-
-  // Promoted slots are page-1 only, and never on explicit price sorts where
-  // an injected item would visibly break the ordering the user asked for.
-  if (!opts.noPromoted && page === 1 && sort === 'relevance' && items.length >= 4) {
-    const promoted = await fetchPromoted(env, parse);
-    if (promoted.length) items = injectPromoted(items, promoted, perPage);
-  }
+  const items = scored.slice(offset, offset + perPage);
 
   const relaxations = total === 0 ? buildRelaxations(parse, opts.query, filtered.binding) : [];
 

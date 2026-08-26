@@ -10,8 +10,8 @@
 | D1 database | `learnfrench-staging-db` (shared, `vestiq_`-prefixed tables — ADR-9) |
 | KV namespaces | `CACHE`, `VECTORS`, `SESSIONS` |
 | AI | Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`, `@cf/baai/bge-small-en-v1.5`) |
-| Catalogue | 26 brands · 1,262 products · 14 collections (demo seed) |
-| Vector index | v1, 384-dim int8, 1,262 vectors, 1 shard, active |
+| Catalogue | Real merchant feeds only; no bundled sample inventory |
+| Vector index | v1, 384-dim int8; rebuilt after approved feed syncs |
 | Scheduler | GitHub Actions → `POST /admin/jobs/tick` |
 
 Verify at any time:
@@ -39,9 +39,8 @@ npx wrangler secret put ADMIN_TOKEN      # required; 24+ random chars
 npx wrangler secret put GEMINI_API_KEY   # optional; better parsing + vision
 npx wrangler secret put RESEND_API_KEY   # optional; outbound alert email
 
-# 3. Schema, data, deploy
+# 3. Schema and deploy
 node scripts/migrate.mjs --remote
-npm run seed                             # demo catalogue; skip for real feeds only
 npm run deploy
 
 # 4. Build the semantic index (needs the AI binding, so it runs in the Worker)
@@ -154,18 +153,19 @@ proxy actually resize rather than pass through.
 
 ## Going live with real inventory
 
-The seed catalogue exists so the site is inspectable immediately. For real
-traffic:
+The application intentionally starts without invented products. For real traffic:
 
-1. **Remove the demo data** (see `06-runbook.md` → *Reset the demo catalogue*, then
-   skip `npm run seed`). Demo brands are tagged `demo` in `style_tags`.
+1. **Apply all migrations.** `0002_free_launch_cleanup.sql` removes any retired
+   sample inventory and disables every paid campaign or affiliate setting.
 2. **Onboard real brands** at `/merchant/signup` — they paste a store URL; Shopify
    feeds are auto-derived. Approve them at `/admin/brands`.
-3. **Set affiliate terms** per brand (`affiliate_tmpl`, `affiliate_rate_bp`) so
-   `/go/:id` wraps outbound links with tracking.
-4. **Run `npm run embed`** so new products enter the semantic index.
-5. **Configure `/health` monitoring** and the alerts in
+3. **Run `npm run embed`** so new products enter the semantic index.
+4. **Configure `/health` monitoring** and the alerts in
    `05-sre-readiness.md` §3.
+
+Vestiq is free for shoppers and brands during launch. Product prices link to the
+brand's own store; Vestiq does not run checkout, subscriptions, promoted results,
+affiliate wrapping, campaign budgets, or payouts.
 
 Note that `/merchant/signup` guesses `https://<domain>/products.json`, which is
 correct for the large majority of Indian D2C stores because they run Shopify. The

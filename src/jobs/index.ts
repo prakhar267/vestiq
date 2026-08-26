@@ -513,7 +513,7 @@ export async function dispatchAlerts(env: Env, log: Logger): Promise<{ fired: nu
      FROM ${T.alerts} a
      JOIN ${T.products} p ON p.id = a.product_id
      JOIN ${T.brands} b ON b.id = p.brand_id
-     WHERE a.status = 'armed' AND p.status = 'active'
+     WHERE a.status = 'armed' AND p.status = 'active' AND b.status = 'active'
      LIMIT 500`,
   ).all<Record<string, unknown>>();
 
@@ -536,16 +536,13 @@ export async function dispatchAlerts(env: Env, log: Logger): Promise<{ fired: nu
 
     if (!shouldFire) continue;
 
-    fired++;
-    statements.push(
-      env.DB.prepare(`UPDATE ${T.alerts} SET status = 'fired', fired_at = ? WHERE id = ?`).bind(
-        Date.now(),
-        String(row.id),
-      ),
-    );
-
     const email = row.email ? String(row.email) : null;
-    if (email) {
+    if (!email) {
+      log.error('alert has no delivery address', undefined, { alert_id: String(row.id) });
+      continue;
+    }
+
+    try {
       await sendAlertEmail(env, email, {
         kind,
         title: String(row.title),
@@ -553,8 +550,21 @@ export async function dispatchAlerts(env: Env, log: Logger): Promise<{ fired: nu
         price,
         basePrice,
         url: `${env.SITE_URL}/p/${String(row.slug)}-${String(row.product_id)}`,
-      }).catch((err) => log.error('alert email failed', err));
+      });
+    } catch (err) {
+      // Keep the alert armed so the next scheduled run can retry. Marking it
+      // fired before a successful delivery creates a silent false positive.
+      log.error('alert email failed', err, { alert_id: String(row.id) });
+      continue;
     }
+
+    fired++;
+    statements.push(
+      env.DB.prepare(`UPDATE ${T.alerts} SET status = 'fired', fired_at = ? WHERE id = ?`).bind(
+        Date.now(),
+        String(row.id),
+      ),
+    );
   }
 
   for (const batch of chunk(statements, 40)) await env.DB.batch(batch);
@@ -572,12 +582,11 @@ interface AlertEmail {
 }
 
 /**
- * Email delivery via Resend when configured. Without a key, alerts still fire
- * and are visible in /wardrobe — the feature degrades to in-app only rather
- * than breaking.
+ * Email delivery via Resend. A missing key is an operational failure, not a
+ * successful notification; the caller leaves the alert armed for retry.
  */
 async function sendAlertEmail(env: Env, to: string, alert: AlertEmail): Promise<void> {
-  if (!env.RESEND_API_KEY) return;
+  if (!env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is not configured');
 
   const rupees = (paise: number) => `₹${Math.round(paise / 100).toLocaleString('en-IN')}`;
   const subject =
@@ -629,7 +638,7 @@ export async function runSavedIntents(env: Env, log: Logger): Promise<number> {
   for (const intent of res.results ?? []) {
     try {
       const seen = new Set(safeJson<string[]>(intent.seen_ids, []));
-      const results = await search(env, { query: intent.query_raw, perPage: 24, noPromoted: true });
+      const results = await search(env, { query: intent.query_raw, perPage: 24 });
       const fresh = results.items.filter((i) => !seen.has(i.id));
 
       const nextSeen = [...results.items.map((i) => i.id), ...seen].slice(0, 200);
@@ -714,7 +723,7 @@ export async function refreshCollections(env: Env, log: Logger): Promise<void> {
       const filters = safeJson<Record<string, unknown>>(row.filters, {});
       const { heuristicParse } = await import('../ai/heuristic');
       const parse = { ...heuristicParse(''), ...filters, confidence: 0.9 } as never;
-      const results = await search(env, { query: '', parse, perPage: 1, noPromoted: true });
+      const results = await search(env, { query: '', parse, perPage: 1 });
 
       await env.DB.prepare(
         `UPDATE ${T.collections} SET item_count = ?, indexable = ?, updated_at = ? WHERE id = ?`,
@@ -834,11 +843,6 @@ export async function runScheduledTasks(
 
 async function weeklyMaintenance(env: Env, log: Logger): Promise<void> {
   await env.DB.batch([
-    // Reset exhausted campaigns that have budget headroom again.
-    env.DB.prepare(
-      `UPDATE ${T.promotions} SET status = 'active'
-       WHERE status = 'exhausted' AND spent_paise < budget_paise`,
-    ),
     // Bound table growth on the free tier.
     env.DB.prepare(`DELETE FROM ${T.events} WHERE ts < ?`).bind(Date.now() - 90 * 86_400_000),
     env.DB.prepare(`DELETE FROM ${T.searches} WHERE ts < ?`).bind(Date.now() - 180 * 86_400_000),

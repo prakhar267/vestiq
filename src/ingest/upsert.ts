@@ -131,6 +131,7 @@ export async function upsertCatalog(
            materials = excluded.materials,
            occasions = excluded.occasions,
            style_tags = excluded.style_tags,
+           attributes = excluded.attributes,
            availability = excluded.availability,
            content_hash = excluded.content_hash,
            last_verified_at = excluded.last_verified_at,

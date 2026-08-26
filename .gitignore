@@ -14,3 +14,7 @@ npm-debug.log*
 # Built client bundle is committed so `wrangler deploy` works from a clean
 # checkout without a build step; regenerate with `npm run build:client`.
 !public/app.js
+
+# Generated test output: Playwright HTML reports, traces, failure screenshots,
+# and manual QA captures. Regenerate with `npm run test:e2e`.
+artifacts/

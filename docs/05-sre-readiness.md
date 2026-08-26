@@ -91,11 +91,11 @@ external dependencies beyond D1.
 | Worker CPU | 10 ms/request | ~20–40 ms wall, low CPU | Fine (CPU ≠ wall time) |
 | D1 rows read | 5M/day | ~450 reads/search | **~11k searches/day** ← binding constraint |
 | D1 rows written | 100k/day | ~3/search + ingestion | Fine with content-hash short-circuit |
-| D1 storage | 5 GB | ~2 MB at 1,262 SKUs | ~100k+ SKUs |
+| D1 storage | 5 GB | Depends on approved real feeds | ~100k+ SKUs at the measured row size |
 | KV reads | 100k/day | 3–5/request | Watch |
 | KV writes | 1k/day | sessions + rate limits | **Tight** — mitigated by the 1-hour session touch interval and 60 s flag cache |
 | Workers AI | daily neuron allocation | 1 parse/uncached search | Mitigated by 70% parse-cache hit rate |
-| Vector index | 25 MB/KV value | 485 KB (1,262 × 384 B) | ~65k SKUs per shard, auto-sharded beyond |
+| Vector index | 25 MB/KV value | 384 bytes per approved product | ~65k SKUs per shard, auto-sharded beyond |
 
 **The first ceiling is D1 row reads at roughly 11k searches/day.** The mitigation
 is already built (Cache API for anonymous result HTML, parse caching); the fix
@@ -112,8 +112,8 @@ both of which are bounded by construction:
 - recall pool is hard-capped at 400 candidates, so a search's D1 cost is O(1) in
   catalogue size, not O(n);
 - hydration is chunked at 100 bound parameters per statement;
-- the vector scan is 1,262 × 384 int8 multiply-accumulates ≈ sub-millisecond, and
-  the index is cached in-isolate for 5 minutes with a 24 MB retention ceiling;
+- the vector scan is bounded by the 24 MB in-isolate retention ceiling and the
+  index is cached for 5 minutes;
 - scheduled work is time-boxed (25 s dispatcher budget, 20 s job-drain budget) and
   resumes on the next tick rather than running to the CPU limit.
 
@@ -172,9 +172,8 @@ Worker version runs unchanged against a newer schema. That property is what make
 rollback a one-command operation and must be preserved: never write a migration
 that drops or renames a column in use.
 
-Emergency mitigation without a deploy, via `/admin/flags`:
-`ai_parse_enabled`, `vector_search_enabled`, `stylist_enabled`,
-`promoted_enabled`, `ingestion_enabled`. Flags take effect within 60 seconds.
+Emergency mitigation without a deploy uses only runtime flags that are actually
+enforced. The paid-placement flag has been removed from free-launch mode.
 
 ---
 

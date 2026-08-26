@@ -14,6 +14,12 @@ import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
  * `defineWorkersConfig` / `poolOptions.workers` config with this Vite plugin.
  */
 export default defineConfig({
+  test: {
+    // tests/e2e/* are Playwright specs driving a real wrangler dev server; they
+    // must not be collected by Vitest, which would try to run them inside
+    // workerd where @playwright/test cannot resolve.
+    exclude: ['tests/e2e/**', 'node_modules/**'],
+  },
   plugins: [
     cloudflareTest({
       main: './src/index.ts',

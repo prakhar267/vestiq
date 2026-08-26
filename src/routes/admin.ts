@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppContext, Env } from '../types';
 import { T, audit, getFlag, setFlag } from '../lib/db';
-import { esc, formatINR, safeEqual, timeAgo, truncate } from '../lib/util';
+import { esc, safeEqual, timeAgo, truncate } from '../lib/util';
 import { layout } from '../ui/layout';
 import { sectionHead } from '../ui/components';
 
@@ -104,7 +104,7 @@ adminRoutes.get('/admin', async (c) => {
   const day = Date.now() - 86_400_000;
   const week = Date.now() - 7 * 86_400_000;
 
-  const [products, brands, searches, zeroRate, clicks, revenue, staleCount] = await Promise.all([
+  const [products, brands, searches, zeroRate, clicks, staleCount] = await Promise.all([
     one(c.env, `SELECT COUNT(*) AS n FROM ${T.products} WHERE status = 'active'`),
     one(c.env, `SELECT COUNT(*) AS n FROM ${T.brands} WHERE status = 'active'`),
     one(c.env, `SELECT COUNT(*) AS n FROM ${T.searches} WHERE ts > ?`, [day]),
@@ -115,12 +115,6 @@ adminRoutes.get('/admin', async (c) => {
       [week],
     ),
     one(c.env, `SELECT COUNT(*) AS n FROM ${T.clicks} WHERE ts > ?`, [day]),
-    one(
-      c.env,
-      `SELECT COALESCE(SUM(commission), 0) + COALESCE(SUM(cpc_paise), 0) AS n
-       FROM ${T.clicks} WHERE ts > ?`,
-      [week],
-    ),
     one(
       c.env,
       `SELECT COUNT(*) AS n FROM ${T.products}
@@ -148,7 +142,6 @@ adminRoutes.get('/admin', async (c) => {
         ${stat('Zero-result 7d', `${zeroRate}%`, zeroRate > 3 ? 'bad' : 'good')}
         ${stat('Hop-outs 24h', clicks.toLocaleString('en-IN'))}
         ${stat('10s bounce-back', `${bounce}%`, bounce > 25 ? 'bad' : 'good')}
-        ${stat('Revenue 7d', formatINR(revenue))}
         ${stat('Stale listings', staleCount.toLocaleString('en-IN'), staleCount > products * 0.1 ? 'warn' : 'good')}
       </div>
       <p class="tiny">Targets from docs/01-product.md §7: zero-result &lt; 3%, bounce-back &lt; 25%.</p>`,
@@ -262,9 +255,15 @@ adminRoutes.post('/admin/brands/:id/status', async (c) => {
   const status = String(form.get('status') ?? '');
   if (!['active', 'pending', 'suspended'].includes(status)) return c.text('bad status', 400);
 
-  await c.env.DB.prepare(`UPDATE ${T.brands} SET status = ?, updated_at = ? WHERE id = ?`)
-    .bind(status, Date.now(), id)
-    .run();
+  const merchantStatus = status === 'active' ? 'approved' : status;
+  // D1 batches execute transactionally, so shopper visibility and feed access
+  // cannot disagree if either update fails.
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE ${T.brands} SET status = ?, updated_at = ? WHERE id = ?`)
+      .bind(status, Date.now(), id),
+    c.env.DB.prepare(`UPDATE ${T.merchants} SET status = ? WHERE brand_id = ?`)
+      .bind(merchantStatus, id),
+  ]);
   await audit(c.env, 'admin', 'brand_status', id, { status }, c.req.header('cf-connecting-ip'));
   return c.redirect('/admin/brands', 302);
 });
@@ -359,10 +358,6 @@ adminRoutes.post('/admin/reports/:id/resolve', async (c) => {
 
 /** Kill switches. The point of these is that they work when AI is on fire. */
 const FLAGS = [
-  { key: 'ai_parse_enabled', label: 'AI query parsing', help: 'Off = heuristic parser only.' },
-  { key: 'vector_search_enabled', label: 'Semantic search', help: 'Off = lexical only.' },
-  { key: 'stylist_enabled', label: 'Stylist chat', help: 'Off = /stylist shows a notice.' },
-  { key: 'promoted_enabled', label: 'Promoted placements', help: 'Off = fully organic results.' },
   { key: 'ingestion_enabled', label: 'Feed ingestion', help: 'Off = cron skips feed syncs.' },
 ];
 

@@ -8,7 +8,7 @@ import { rateIdentity, rateLimit, rateLimitHeaders } from '../lib/ratelimit';
 import { getAi, STYLIST_SYSTEM_PROMPT, type ChatMessage } from '../ai/provider';
 import { search } from '../search';
 import { productGrid } from '../ui/components';
-import { applyUrlFilters } from './pages';
+import { applyUrlFilters, validatedSearchParams, validatedSort } from './pages';
 
 type Ctx = { Bindings: Env; Variables: { app: AppContext } };
 
@@ -37,19 +37,22 @@ apiRoutes.get('/api/search', async (c) => {
   const query = (url.searchParams.get('q') ?? '').trim().slice(0, 300);
   if (!query) return c.json({ error: 'missing q' }, 400);
 
-  const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
+  const params = validatedSearchParams(url.searchParams, query);
+  const page = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
+  const sort = validatedSort(params);
   const format = url.searchParams.get('format');
 
   const { parseQueryCached } = await import('../search');
   const degradedHints: string[] = [];
   const baseParse = await parseQueryCached(c.env, query, (m) => degradedHints.push(m));
-  const parse = applyUrlFilters(baseParse, url.searchParams);
+  const parse = applyUrlFilters(baseParse, params);
 
   const response = await search(c.env, {
     query,
     parse,
     page,
     perPage: 24,
+    sort,
     session: c.var.app.session,
     degradedHints,
   });
@@ -94,7 +97,6 @@ apiRoutes.get('/api/search', async (c) => {
       image: i.image_url,
       availability: i.availability,
       match_reasons: i.match_reasons,
-      promoted: i.promoted,
     })),
   });
 });
@@ -244,11 +246,29 @@ apiRoutes.post('/api/alert', async (c) => {
   const { product_id, kind, email, target_rupees } = parsed.data;
 
   const product = await c.env.DB.prepare(
-    `SELECT id, price FROM ${T.products} WHERE id = ? AND status = 'active'`,
+    `SELECT p.id, p.price FROM ${T.products} p
+     JOIN ${T.brands} b ON b.id = p.brand_id
+     WHERE p.id = ? AND p.status = 'active' AND b.status = 'active'`,
   )
     .bind(product_id)
     .first<{ id: string; price: number }>();
   if (!product) return c.json({ error: 'not_found' }, 404);
+
+  let deliveryEmail = email;
+  if (!deliveryEmail && c.var.app.session.user_id) {
+    const user = await c.env.DB.prepare(
+      `SELECT email FROM ${T.users} WHERE id = ? AND status = 'active'`,
+    )
+      .bind(c.var.app.session.user_id)
+      .first<{ email: string | null }>();
+    deliveryEmail = user?.email ?? undefined;
+  }
+
+  // Alerts need a real delivery channel before they are armed. Do not create a
+  // row that the dispatcher can never notify.
+  if (!deliveryEmail) {
+    return c.json({ ok: false, needs_email: true });
+  }
 
   await c.env.DB.prepare(
     `INSERT INTO ${T.alerts}
@@ -267,12 +287,12 @@ apiRoutes.post('/api/alert', async (c) => {
       kind,
       target_rupees ? Math.round(target_rupees * 100) : null,
       product.price,
-      email ?? null,
+      deliveryEmail,
       Date.now(),
     )
     .run();
 
-  return c.json({ ok: true, needs_email: !email && !c.var.app.session.user_id });
+  return c.json({ ok: true, needs_email: false });
 });
 
 // ---------------------------------------------------------------- saved intents
@@ -316,6 +336,15 @@ apiRoutes.post('/api/report', async (c) => {
   const parsed = ReportBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
 
+  const product = await c.env.DB.prepare(
+    `SELECT p.id FROM ${T.products} p
+     JOIN ${T.brands} b ON b.id = p.brand_id
+     WHERE p.id = ? AND p.status = 'active' AND b.status = 'active'`,
+  )
+    .bind(parsed.data.product_id)
+    .first<{ id: string }>();
+  if (!product) return c.json({ error: 'not_found' }, 404);
+
   await c.env.DB.prepare(
     `INSERT INTO ${T.reports} (id, product_id, reason, note, session_id, ts) VALUES (?,?,?,?,?,?)`,
   )
@@ -328,22 +357,6 @@ apiRoutes.post('/api/report', async (c) => {
       Date.now(),
     )
     .run();
-
-  // Three independent reports auto-demote the listing. Acting on user signal
-  // immediately matters more than waiting for a human to triage (U22).
-  c.executionCtx.waitUntil(
-    c.env.DB.prepare(
-      `UPDATE ${T.products} SET status = 'stale'
-       WHERE id = ? AND (
-         SELECT COUNT(DISTINCT session_id) FROM ${T.reports}
-         WHERE product_id = ? AND resolved = 0
-       ) >= 3`,
-    )
-      .bind(parsed.data.product_id, parsed.data.product_id)
-      .run()
-      .then(() => undefined)
-      .catch(() => undefined),
-  );
 
   return c.json({ ok: true });
 });
@@ -403,6 +416,60 @@ const ChatBody = z.object({
 
 /** Marker the model emits to request a live product grid. */
 const SEARCH_MARKER = /\[\[SEARCH:\s*([^\]]{2,120})\]\]/;
+const SEARCH_MARKER_OPEN = '[[SEARCH:';
+
+export type StylistBufferPart =
+  | { type: 'text'; value: string }
+  | { type: 'search'; value: string };
+
+/**
+ * Split complete search markers from streamed prose while retaining only a tail
+ * that could still become a marker. This is deliberately pure so every chunk
+ * boundary can be regression-tested.
+ */
+export function drainStylistBuffer(
+  input: string,
+  force = false,
+): { pending: string; parts: StylistBufferPart[] } {
+  let pending = input;
+  const parts: StylistBufferPart[] = [];
+
+  let match = SEARCH_MARKER.exec(pending);
+  while (match) {
+    if (match.index > 0) parts.push({ type: 'text', value: pending.slice(0, match.index) });
+    parts.push({ type: 'search', value: match[1].trim() });
+    pending = pending.slice(match.index + match[0].length);
+    match = SEARCH_MARKER.exec(pending);
+  }
+
+  if (force) {
+    if (pending) parts.push({ type: 'text', value: pending });
+    return { pending: '', parts };
+  }
+
+  let holdFrom = pending.length;
+  for (let i = 0; i < pending.length; i++) {
+    if (pending[i] !== '[') continue;
+    const candidate = pending.slice(i);
+    if (SEARCH_MARKER_OPEN.startsWith(candidate)) {
+      holdFrom = i;
+      break;
+    }
+    if (!candidate.startsWith(SEARCH_MARKER_OPEN)) continue;
+
+    const tail = candidate.slice(SEARCH_MARKER_OPEN.length);
+    const firstClose = tail.indexOf(']');
+    const canStillClose = firstClose === -1 || firstClose === tail.length - 1;
+    const querySoFar = (firstClose === -1 ? tail : tail.slice(0, firstClose)).trimStart();
+    if (canStillClose && querySoFar.length <= 120) {
+      holdFrom = i;
+      break;
+    }
+  }
+
+  if (holdFrom > 0) parts.push({ type: 'text', value: pending.slice(0, holdFrom) });
+  return { pending: pending.slice(holdFrom), parts };
+}
 
 apiRoutes.post('/api/stylist', async (c) => {
   const blocked = await gate(c, 'stylist');
@@ -429,23 +496,38 @@ apiRoutes.post('/api/stylist', async (c) => {
 
   const stream = new ReadableStream({
     async start(controller) {
-      // Buffer only what could still be part of a marker, so partial "[[SEA…"
-      // is never flushed to the user as visible text.
       let pending = '';
       let searchesRun = 0;
 
-      const flushSafe = (force = false) => {
-        if (force) {
-          if (pending) controller.enqueue(sse('token', pending));
-          pending = '';
-          return;
-        }
-        // Hold back a tail that might begin a marker.
-        const lastOpen = pending.lastIndexOf('[');
-        const safeUpTo = lastOpen === -1 ? pending.length : lastOpen;
-        if (safeUpTo > 0) {
-          controller.enqueue(sse('token', pending.slice(0, safeUpTo)));
-          pending = pending.slice(safeUpTo);
+      const emitParts = async (parts: StylistBufferPart[]) => {
+        for (const part of parts) {
+          if (part.type === 'text') {
+            if (part.value) controller.enqueue(sse('token', part.value));
+            continue;
+          }
+
+          if (searchesRun >= 3) continue;
+          searchesRun++;
+          const q = part.value;
+          try {
+            const results = await search(env, {
+              query: q,
+              perPage: 4,
+              session: app.session,
+            });
+            if (results.items.length) {
+              controller.enqueue(
+                sse('products', {
+                  query: q,
+                  html: `<p class="tiny" style="margin:var(--s4) 0 var(--s2)">${esc(q)} — <a href="/search?q=${encodeURIComponent(q)}">see all</a></p>${productGrid(results.items, { now: Date.now() })}`,
+                }),
+              );
+            } else {
+              controller.enqueue(sse('token', `\n\n_(nothing in stock for "${q}" right now)_\n\n`));
+            }
+          } catch {
+            controller.enqueue(sse('degraded', 'stylist:search'));
+          }
         }
       };
 
@@ -454,47 +536,14 @@ apiRoutes.post('/api/stylist', async (c) => {
 
         for await (const token of ai.chat(messages)) {
           pending += token;
-
-          let match = SEARCH_MARKER.exec(pending);
-          while (match) {
-            // Emit text before the marker, then the resolved grid.
-            const before = pending.slice(0, match.index);
-            if (before) controller.enqueue(sse('token', before));
-            pending = pending.slice(match.index + match[0].length);
-
-            if (searchesRun < 3) {
-              searchesRun++;
-              const q = match[1].trim();
-              try {
-                const results = await search(env, {
-                  query: q,
-                  perPage: 4,
-                  session: app.session,
-                  noPromoted: true,
-                });
-                if (results.items.length) {
-                  controller.enqueue(
-                    sse('products', {
-                      query: q,
-                      html: `<p class="tiny" style="margin:var(--s4) 0 var(--s2)">${esc(q)} — <a href="/search?q=${encodeURIComponent(q)}">see all</a></p>${productGrid(results.items, { now: Date.now() })}`,
-                    }),
-                  );
-                } else {
-                  controller.enqueue(
-                    sse('token', `\n\n_(nothing in stock for "${q}" right now)_\n\n`),
-                  );
-                }
-              } catch {
-                controller.enqueue(sse('degraded', 'stylist:search'));
-              }
-            }
-            match = SEARCH_MARKER.exec(pending);
-          }
-
-          flushSafe();
+          const drained = drainStylistBuffer(pending);
+          pending = drained.pending;
+          await emitParts(drained.parts);
         }
 
-        flushSafe(true);
+        const drained = drainStylistBuffer(pending, true);
+        pending = drained.pending;
+        await emitParts(drained.parts);
         controller.enqueue(sse('done', { ok: true }));
       } catch (err) {
         controller.enqueue(sse('token', "\n\nSomething broke on my side. Try a search instead."));

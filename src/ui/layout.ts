@@ -138,11 +138,9 @@ function footer(env: Env): string {
       </div>
     </div>
     <p class="disclosure">
-      ${esc(env.SITE_NAME)} is a discovery service, not a store. We link you to the
-      brand's own website to complete your purchase, and we may earn a commission
-      on some of those purchases at no extra cost to you. Commission never affects
-      ranking; paid placements are always labelled &ldquo;Promoted&rdquo;.
-      Prices and availability are shown as last verified and can change at the brand's site.
+      ${esc(env.SITE_NAME)} is free for shoppers and brands during launch. We are a
+      discovery service, not a store; purchases happen on each brand's own website.
+      Prices and availability are shown as last verified and can change on the brand's site.
     </p>
     <p class="disclosure">&copy; ${year} ${esc(env.SITE_NAME)}. Made in India.</p>
   </div>

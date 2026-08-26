@@ -41,41 +41,78 @@ export const RULES = {
 
 export type RuleName = keyof typeof RULES;
 
+/**
+ * A request is constrained independently by both dimensions. The session cap
+ * protects an individual browser, while the IP cap prevents a client from
+ * minting a fresh budget simply by omitting or rotating its cookie.
+ */
+export interface RequestRateIdentity {
+  ip: string;
+  session?: string;
+}
+
 export async function rateLimit(
   env: Env,
   ruleName: RuleName,
-  identity: string,
+  identity: RequestRateIdentity | string,
 ): Promise<RateLimitResult> {
   const rule = RULES[ruleName];
   const { limit, windowSeconds } = rule;
   const nowSec = Math.floor(Date.now() / 1000);
   const windowStart = Math.floor(nowSec / windowSeconds) * windowSeconds;
-  const key = `rl:${ruleName}:${identity}:${windowStart}`;
-  const prevKey = `rl:${ruleName}:${identity}:${windowStart - windowSeconds}`;
   const resetIn = windowStart + windowSeconds - nowSec;
 
+  // The string form is retained for callers/tests that predate dual-dimension
+  // identities. New request paths should always use rateIdentity().
+  const dimensions =
+    typeof identity === 'string'
+      ? [identity]
+      : [
+          `i:${encodeURIComponent(identity.ip)}`,
+          ...(identity.session ? [`s:${encodeURIComponent(identity.session)}`] : []),
+        ];
+
   try {
-    const [curRaw, prevRaw] = await Promise.all([env.CACHE.get(key), env.CACHE.get(prevKey)]);
-    const cur = curRaw ? parseInt(curRaw, 10) || 0 : 0;
-    const prev = prevRaw ? parseInt(prevRaw, 10) || 0 : 0;
+    const states = await Promise.all(
+      dimensions.map(async (dimension) => {
+        const key = `rl:${ruleName}:${dimension}:${windowStart}`;
+        const prevKey = `rl:${ruleName}:${dimension}:${windowStart - windowSeconds}`;
+        const [curRaw, prevRaw] = await Promise.all([
+          env.CACHE.get(key),
+          env.CACHE.get(prevKey),
+        ]);
+        return {
+          key,
+          cur: curRaw ? parseInt(curRaw, 10) || 0 : 0,
+          prev: prevRaw ? parseInt(prevRaw, 10) || 0 : 0,
+        };
+      }),
+    );
 
     // Weight the previous window by how much of it still overlaps ours.
     const elapsed = nowSec - windowStart;
     const prevWeight = Math.max(0, 1 - elapsed / windowSeconds);
-    const effective = cur + prev * prevWeight;
+    const effective = states.map((state) => state.cur + state.prev * prevWeight);
 
-    if (effective >= limit) {
+    // Crossing either budget is enough to stop the request. In particular, a
+    // fresh session never resets the IP dimension, and changing IP does not
+    // weaken the existing session dimension.
+    if (effective.some((used) => used >= limit)) {
       return { ok: false, remaining: 0, limit, resetIn };
     }
 
-    await env.CACHE.put(key, String(cur + 1), {
-      // Keep two windows alive so the smoothing above has data to read.
-      expirationTtl: Math.max(60, windowSeconds * 2),
-    });
+    await Promise.all(
+      states.map((state) =>
+        env.CACHE.put(state.key, String(state.cur + 1), {
+          // Keep two windows alive so the smoothing above has data to read.
+          expirationTtl: Math.max(60, windowSeconds * 2),
+        }),
+      ),
+    );
 
     return {
       ok: true,
-      remaining: Math.max(0, limit - Math.ceil(effective) - 1),
+      remaining: Math.max(0, Math.min(...effective.map((used) => limit - Math.ceil(used) - 1))),
       limit,
       resetIn,
     };
@@ -86,14 +123,44 @@ export async function rateLimit(
   }
 }
 
-/** Identity for limiting: session id when present, else client IP. */
-export function rateIdentity(req: Request, sessionId?: string): string {
-  if (sessionId) return `s:${sessionId}`;
-  const ip =
-    req.headers.get('cf-connecting-ip') ??
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    'unknown';
-  return `i:${ip}`;
+/**
+ * Cloudflare overwrites CF-Connecting-IP at the edge, making it the trustworthy
+ * client-address dimension in production. X-Forwarded-For is deliberately not
+ * used: a direct client can spoof it. When the edge header is unavailable
+ * (local development/service calls), every request shares the conservative
+ * `unknown` bucket rather than receiving a mintable identity.
+ */
+export function rateIdentity(req: Request, sessionId?: string): RequestRateIdentity {
+  return {
+    ip: normaliseClientIp(req.headers.get('cf-connecting-ip')),
+    ...(sessionId?.trim() ? { session: sessionId.trim().slice(0, 128) } : {}),
+  };
+}
+
+function normaliseClientIp(raw: string | null): string {
+  const candidate = (raw ?? '').trim().toLowerCase();
+  if (!candidate) return 'unknown';
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(candidate)) {
+    const parts = candidate.split('.').map(Number);
+    if (parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+      return parts.join('.');
+    }
+    return 'unknown';
+  }
+
+  const unwrapped = candidate.startsWith('[') && candidate.endsWith(']')
+    ? candidate.slice(1, -1)
+    : candidate;
+  if (!/^[0-9a-f:]{2,45}$/.test(unwrapped) || !unwrapped.includes(':')) return 'unknown';
+
+  try {
+    // URL parsing gives us strict IPv6 validation and a canonical spelling.
+    const host = new URL(`https://[${unwrapped}]/`).hostname;
+    return host.replace(/^\[|\]$/g, '');
+  } catch {
+    return 'unknown';
+  }
 }
 
 export function rateLimitHeaders(r: RateLimitResult): Record<string, string> {

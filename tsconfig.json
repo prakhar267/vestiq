@@ -23,5 +23,5 @@
   // src/client is browser code and is typechecked by tsconfig.client.json —
   // @cloudflare/workers-types and lib.dom define conflicting globals, so the two
   // environments cannot share one program.
-  "exclude": ["node_modules", "scripts", "public", "src/client"]
+  "exclude": ["node_modules", "scripts", "public", "src/client", "tests/e2e"]
 }

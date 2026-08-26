@@ -1,7 +1,9 @@
 # Vestiq — Design System
 
 > Role: Head of Design
-> Implemented in: `src/ui/tokens.css`, `src/ui/components.ts`
+> Implemented in: `public/styles.css`, `src/ui/components.ts`, `src/ui/layout.ts`
+> Scope note: this document distinguishes shipped components from deferred design
+> directions; a named component is not a launch claim unless marked shipped.
 
 ---
 
@@ -57,11 +59,12 @@ and UI boundaries. `--ink-3` on `--bg` is 4.6:1 — the floor, used only for cap
 
 ## 3. Typography
 
-Two faces, both self-hosted as variable fonts, subset to Latin + Devanagari-currency glyphs.
+The launch uses resilient system stacks and does not download a custom font file.
 
-- **Display / headings / price:** *Instrument Serif* — high-contrast editorial serif.
-- **UI / body:** *Inter* variable — the workhorse.
-- **Fallback stack:** `ui-serif, Georgia, serif` and `system-ui, -apple-system, sans-serif`.
+- **Display / headings / price:** `ui-serif, "Instrument Serif", Georgia, serif`.
+  Instrument Serif is used only when already available on the device; Georgia is
+  the normal fallback.
+- **UI / body:** `system-ui, -apple-system, "Segoe UI", Inter, sans-serif`.
 
 Fluid scale, `clamp()`-based, 1.2 ratio at mobile widening to 1.25 at desktop:
 
@@ -115,23 +118,23 @@ Each ships in `src/ui/components.ts` as a pure function returning HTML.
 - `FilterSheet` — full facets; bottom sheet on mobile, left rail on desktop.
 
 **Product**
-- `ProductCard` — image (3:4, `loading=lazy`, `decoding=async`, explicit `width/height` to
-  reserve layout and hold CLS at 0), brand eyebrow, title (2-line clamp), price + strike,
-  `TrustPill`, `MatchReasons`, save-heart. Entire card is one `<a>`; save-heart is a nested
-  `<button>` (never a nested `<a>`).
+- `ProductCard` — image (3:4, `loading=lazy`, `decoding=async`, explicit dimensions),
+  brand eyebrow, title (2-line clamp), price + strike, `TrustPill`, `MatchReasons`,
+  and a separate save button. The link and button are sibling interactive targets.
 - `MatchReasons` — up to 3 chips: "cotton" · "under ₹3,000" · "similar to Botnia".
 - `TrustPill` — verified merchant / ships in Nd / stale-listing warning.
 - `PriceBlock` — tabular, strike-through MRP, no percentage-off in red.
-- `ProductDetail` — gallery, size/colour, `AlertButton`, `SimilarStrip`, `CompleteTheLook`,
-  labelled outbound CTA "View at {brand} →" with `rel="nofollow sponsored noopener"`.
+- `ProductDetail` — gallery, size/colour, `AlertButton`, price history and
+  `SimilarStrip`, plus a labelled direct outbound CTA "View on {brand} →".
 
 **Stylist**
 - `ChatThread` — streaming assistant messages, inline product grids mid-message,
   `aria-live="polite"`. Aborts cleanly on navigate.
-- `LookCard` — 4-slot look with total price and a single "shop all" fan-out.
+- Full-look cards, a multi-slot look builder and shareable lookbooks are deferred;
+  no `LookCard` or “shop all” fan-out ships in the free launch.
 
 **Shell / system**
-- `Header` (dock-on-scroll), `Footer` (affiliate disclosure), `BrandHeader`, `EmptyState`
+- `Header` (dock-on-scroll), `Footer` (free-launch and external-store disclosure), `BrandHeader`, `EmptyState`
   (never a dead end — always offers 3 relaxed queries), `Toast`, `Pagination` (real
   `<a href>` links, so it works with JS off and Google can crawl it), `SkipLink`.
 
@@ -154,10 +157,15 @@ CTA, because that is the exact moment hesitation peaks.
 
 **Stylist** — centred 720px column, suggested openers, streaming tokens, products inline.
 
-**Wardrobe** — saved grid + armed alerts, with price history sparkline per item.
+**Wardrobe** — browser-bound saved grid, alert status and standing-search rows
+when they exist. Shopper sign-in/cross-device merge and the public standing-search
+creation control are deferred.
+
+**Drops** — newest approved products, ordered by first-seen time. Following brands,
+taste onboarding and personalised drops are deferred.
 
 **Merchant portal** — the only screen allowed to look like a dashboard: dense tables,
-feed health, demand gap report, payout ledger.
+feed health and a free demand gap report.
 
 ---
 
@@ -176,6 +184,10 @@ feed health, demand gap report, payout ledger.
   is real links, filters are real form controls. JS enhances; it is never required.
 - `prefers-reduced-motion` disables all transitions.
 
+Automated journey QA runs Playwright at desktop and 390px mobile widths. Axe checks
+WCAG 2.0/2.1 A/AA rules and fails on serious or critical violations. This is a
+regression guard, not a substitute for manual screen-reader and zoom testing.
+
 ---
 
 ## 8. Performance budget
@@ -186,7 +198,7 @@ Design constraints, enforced in CI (`npm run check:budget`):
 | --- | --- |
 | Critical CSS, inlined | ≤ 14 KB |
 | JS shipped on the home/search path | ≤ 24 KB gzipped |
-| Fonts | 2 files, `font-display: swap`, preloaded, subset |
+| Fonts | No custom font downloads on the launch path |
 | LCP (mobile, 4G) | < 1.8 s |
 | CLS | < 0.02 |
 | INP | < 150 ms |

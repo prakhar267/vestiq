@@ -114,17 +114,18 @@ npx wrangler d1 execute learnfrench-staging-db --remote --command \
   breakdown at `/merchant/feed`.
 - All `out_of_stock` → the feed stopped listing them (correct behaviour), or the
   merchant genuinely sold out.
-- `status = 'stale'` → not verified in 21 days, or auto-demoted by 3+ user
-  reports. Check `vestiq_reports`.
+- `status = 'stale'` → not verified in 21 days. Check the latest feed run and
+  `vestiq_reports` for corroborating shopper reports.
 
-## Incident: inference bill / neuron budget spiking
+## Incident: inference capacity spiking
 
-1. `curl -X POST -H "authorization: Bearer $ADMIN_TOKEN" $SITE_URL/admin/flags` —
-   or use the UI to turn off `ai_parse_enabled`. Search falls to the heuristic
-   parser immediately; the product keeps working.
-2. Check the parse-cache hit rate — a low rate means queries are unusually diverse
+1. Check the parse-cache hit rate — a low rate means queries are unusually diverse
    or the cache version was just bumped.
-3. Tighten `RULES.ai_parse` / `RULES.stylist` in `src/lib/ratelimit.ts`.
+2. Tighten `RULES.ai_parse` / `RULES.stylist` in `src/lib/ratelimit.ts` and deploy.
+   Search automatically falls back to the heuristic parser when an inference
+   provider rejects or times out.
+3. Review the provider dashboard and Cloudflare request logs before raising any
+   quota. Vestiq's free-launch UI has no billing or payment surface.
 
 ## Incident: abusive traffic
 
@@ -170,18 +171,18 @@ npx wrangler d1 execute learnfrench-staging-db --remote --command \
 echo "Send this to the merchant over a secure channel: $NEW_KEY"
 ```
 
-## Routine: reset the demo catalogue
+## Routine: verify the real-catalogue-only launch
+
+Migration `0002_free_launch_cleanup.sql` removes the retired invented catalogue
+and every paid campaign setting. Verify that no such rows remain:
 
 ```bash
 npx wrangler d1 execute learnfrench-staging-db --remote --command \
-  "DELETE FROM vestiq_products_fts; DELETE FROM vestiq_price_history; DELETE FROM vestiq_products; DELETE FROM vestiq_brands WHERE style_tags LIKE '%demo%';"
-npm run seed
-npm run embed
+  "SELECT COUNT(*) AS invented_products FROM vestiq_products WHERE external_id LIKE 'demo-%'; SELECT COUNT(*) AS paid_campaigns FROM vestiq_promotions;"
 ```
 
-> **Careful:** this database is shared with another project (ADR-9). Only ever
-> touch `vestiq_`-prefixed tables. Never run an unprefixed `DROP` or a bare
-> `DELETE FROM` against a table without the prefix.
+Both counts must be zero. This database is shared with another project (ADR-9),
+so only ever touch `vestiq_`-prefixed tables.
 
 ## Routine: move to a dedicated D1 database
 
@@ -192,6 +193,6 @@ npx wrangler d1 create vestiq-db
 # update database_name + database_id in wrangler.toml
 # set PREFIX = '' in src/lib/db.ts   (nothing else hardcodes a table name)
 node scripts/migrate.mjs --remote
-npm run seed && npm run embed
+npm run embed
 npm run deploy
 ```

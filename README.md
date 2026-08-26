@@ -38,17 +38,20 @@ and every result shows why it matched. An opaque ranker becomes a correctable
 filter set.
 
 **Trust** — per-brand trust scores, `last_verified_at` on every listing, liveness
-probes on click-hot items, one-tap problem reports that auto-demote at 3 reports.
+probes on click-hot items, and one-tap problem reports queued for moderation.
 
-**Retention** — anonymous-first wardrobe, price-drop and back-in-stock alerts,
-standing searches re-run nightly. (The reference product has none of this.)
+**Retention** — an anonymous, browser-bound wardrobe plus price-drop and
+back-in-stock alerts. An email address is requested only when an anonymous
+shopper arms an alert. Shopper accounts, cross-device merge, public saved-search
+controls and personalised drops are deferred from the free launch.
 
-**Supply side** — self-serve merchant portal: paste a store URL, feed health with
-per-row rejection reasons, a demand gap report ("searches in your categories that
-someone else won"), CPC promoted placement, payout ledger.
+**Supply side** — free self-serve merchant portal: paste a store URL, inspect feed
+health with per-row rejection reasons, and use a demand gap report ("searches in
+your categories that someone else won").
 
 **Stylist** — streaming multi-turn chat that calls our own search and renders live
-product grids inline.
+product grids inline. Full-look optimisation and shareable lookbooks are roadmap
+work, not launch features.
 
 **SEO as the primary channel** — everything is server-rendered on the first byte,
 with JSON-LD, partitioned sitemaps, and programmatic collection pages that are only
@@ -85,8 +88,9 @@ Notable decisions, with the reasoning in [`docs/03-architecture.md`](docs/03-arc
   degrades relevance, never returns an error page.
 - **Cache the parse, not the results** (ADR-6) — the parse is stable and
   expensive; inventory is not.
-- **Ranking integrity as an invariant** (ADR-10) — promoted results are capped at
-  2 per 24 slots and always labelled, enforced by tests rather than convention.
+- **Ranking integrity as an invariant** (ADR-10) — results are ordered only by
+  relevance, trust, freshness, and shopper-selected sorting. There is no paid
+  placement in the free launch.
 
 ---
 
@@ -94,15 +98,17 @@ Notable decisions, with the reasoning in [`docs/03-architecture.md`](docs/03-arc
 
 ```bash
 npm ci
-npm run verify          # typecheck (worker + client), 181 tests, perf budget
+npm run verify          # typecheck, Vitest, Playwright + Axe, perf budget
 npm run dev             # local dev at http://localhost:8787
 ```
 
-Local data:
+Local schema:
 ```bash
 node scripts/migrate.mjs --local
-node scripts/seed.mjs --local
 ```
+
+The repository does not ship an invented catalogue. Onboard a real brand through
+`/merchant/signup`, approve it in `/admin/brands`, then run its feed sync.
 
 Deploy and operate: [`docs/07-deployment.md`](docs/07-deployment.md) ·
 [`docs/06-runbook.md`](docs/06-runbook.md)
@@ -113,10 +119,10 @@ Deploy and operate: [`docs/07-deployment.md`](docs/07-deployment.md) ·
 
 | Doc | Contents |
 | --- | --- |
-| [01-product.md](docs/01-product.md) | Teardown of the reference product, naming, PRD, 32 mapped use cases, monetisation, metrics, risks |
+| [01-product.md](docs/01-product.md) | Teardown of the reference product, naming, PRD, mapped use cases, free-launch policy, metrics, risks |
 | [02-design.md](docs/02-design.md) | Design thesis, tokens, type scale, components, screens, a11y, perf budget |
 | [03-architecture.md](docs/03-architecture.md) | Topology, request path, data model, 10 ADRs, ingestion, security, failure modes |
-| [04-qa-report.md](docs/04-qa-report.md) | Test strategy, **every bug found and fixed**, security testing, known limitations |
+| [04-qa-report.md](docs/04-qa-report.md) | Vitest + Playwright/Axe strategy, fixed journey defects, security testing, known limitations |
 | [05-sre-readiness.md](docs/05-sre-readiness.md) | SLOs, verified failure modes, observability, capacity, scale triggers, rollback |
 | [06-runbook.md](docs/06-runbook.md) | Incident procedures and routine operations |
 | [07-deployment.md](docs/07-deployment.md) | Deploy, secrets, scheduler, custom domain, going live with real inventory |
@@ -143,29 +149,25 @@ src/
   ui/               layout (CSP, JSON-LD) · components
   client/           the five progressive-enhancement islands
 migrations/         additive-only SQL
-scripts/            migrate · seed · embed · build-client · check-budget
+scripts/            migrate · embed · build-client · check-budget
 tests/              unit + integration (real workerd, real D1)
 ```
 
 ---
 
-## Commercial model
+## Free launch policy
 
-Three tracks, because affiliate alone is fragile on small D2C stores:
-
-1. **Affiliate CPA** — tracked hop-outs, 8–15% on Indian D2C.
-2. **Promoted placement (CPC)** — merchant self-serve, hard-capped at 2 of 24
-   slots, always labelled.
-3. **Brand intelligence (SaaS)** — demand data and the gap report.
-
-Guardrail: paid placement never reorders organic results. Ranking integrity is the
-entire asset, and renting it out cheaply is how this business would die.
+Vestiq is free for shoppers and brands during launch. There is no Vestiq checkout,
+consumer paywall, subscription, promoted placement, affiliate wrapping, campaign
+budget, or payout ledger. Product prices are shown only because the shopper buys
+from the independent brand on its own website.
 
 ---
 
 ## Status
 
-Deployed and functional on Cloudflare's free tier with a 1,262-product demo
-catalogue. Before real traffic: remove the demo data, onboard real brands, add a
-custom domain, and configure `/health` alerting — see
+The application is configured for a real-catalogue-only launch. Migration
+`0002_free_launch_cleanup.sql` removes the previous invented catalogue and all
+paid-placement settings. Onboard and approve real brands before opening traffic,
+then add a custom domain and configure `/health` alerting — see
 [`docs/05-sre-readiness.md`](docs/05-sre-readiness.md) §7.

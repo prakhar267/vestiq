@@ -137,7 +137,6 @@ export interface ResultItem extends Product {
   score: number;
   /** Human-readable reasons this matched, rendered as chips. */
   match_reasons: string[];
-  promoted: boolean;
   /** Debug-only score breakdown, populated when ?debug=1. */
   score_parts?: Record<string, number>;
 }
