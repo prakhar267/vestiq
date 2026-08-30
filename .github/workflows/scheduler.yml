@@ -1,0 +1,61 @@
+name: Scheduler and production health
+
+on:
+  schedule:
+    # Public-repository Actions minutes are free. Interval markers in KV make
+    # delayed or overlapping ticks safe and idempotent.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Job action to run
+        required: true
+        default: tick
+        type: choice
+        options: [tick, drain, embed, feeds, trust, collections, popularity, alerts]
+
+concurrency:
+  group: production-scheduler
+  cancel-in-progress: false
+
+jobs:
+  health-and-tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check production health
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+        run: |
+          set -euo pipefail
+          STATUS=$(curl -sS -o /tmp/health.json -w '%{http_code}' --max-time 30 \
+            "${SITE_URL%/}/health")
+          cat /tmp/health.json
+          test "$STATUS" = "200"
+          grep -q '"status":"healthy"' /tmp/health.json
+
+      - name: Run scheduled tasks
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ACTION: ${{ github.event.inputs.action || 'tick' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::error::ADMIN_TOKEN is not configured."
+            exit 1
+          fi
+
+          STATUS=$(curl -sS -X POST -o /tmp/job.json -w '%{http_code}' \
+            --max-time 120 \
+            -H "authorization: Bearer ${ADMIN_TOKEN}" \
+            "${SITE_URL%/}/admin/jobs/${ACTION}")
+          cat /tmp/job.json
+          test "$STATUS" = "200"
+
+      - name: Record launch-readiness snapshot
+        if: always()
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+        run: |
+          curl -sS --max-time 30 "${SITE_URL%/}/ready" || true

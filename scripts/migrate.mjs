@@ -6,7 +6,8 @@
  * command, because this project shares a database with another project (ADR-9)
  * and must not touch the host's `d1_migrations` state.
  *
- * All DDL is `IF NOT EXISTS`, so re-running is safe and convergent.
+ * Applied files are skipped. This matters because launch-cleanup migrations may
+ * contain DML that must never be replayed against a populated catalogue.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -33,6 +34,15 @@ function execSql(sql) {
   return wrangler(['d1', 'execute', DB, flag, '--file', file, '--json', '-y']);
 }
 
+function execCommand(sql) {
+  return wrangler(['d1', 'execute', DB, flag, '--command', sql, '--json', '-y']);
+}
+
+function parseRows(output) {
+  const payload = JSON.parse(output);
+  return payload.flatMap((entry) => entry.results ?? []);
+}
+
 const files = readdirSync('migrations')
   .filter((f) => f.endsWith('.sql'))
   .sort();
@@ -44,8 +54,26 @@ if (!files.length) {
 
 console.log(`Applying ${files.length} migration(s) to ${DB} (${remote ? 'remote' : 'local'})`);
 
+// Bootstrap the project-local tracker before looking for applied files. This is
+// intentionally separate from 0001 so a fresh database and an existing shared
+// database follow the same code path.
+execSql(`CREATE TABLE IF NOT EXISTS vestiq_migrations (
+  name TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);`);
+
+const appliedRows = parseRows(execCommand('SELECT name FROM vestiq_migrations ORDER BY name;'));
+const alreadyApplied = new Set(appliedRows.map((row) => String(row.name)));
+
 let applied = 0;
+let skipped = 0;
 for (const file of files) {
+  if (alreadyApplied.has(file)) {
+    console.log(`  - ${file} (already applied)`);
+    skipped++;
+    continue;
+  }
+
   const sql = readFileSync(join('migrations', file), 'utf8');
   try {
     execSql(sql);
@@ -62,4 +90,4 @@ for (const file of files) {
   }
 }
 
-console.log(`\nDone. ${applied} migration file(s) applied.`);
+console.log(`\nDone. ${applied} migration file(s) applied, ${skipped} skipped.`);

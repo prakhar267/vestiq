@@ -174,8 +174,9 @@ hash (~70% hit rate); result HTML cached only 300s.
 exponential backoff without adding another runtime dependency. The dispatcher can
 be triggered by a Cloudflare cron, an authenticated admin call, or the
 traffic-driven fallback. Per-task KV markers prevent duplicate scheduled work.
-An external CI scheduler was deliberately ruled out: it would require storing a
-long-lived admin token outside Cloudflare.
+The public GitHub repository uses a scoped `ADMIN_TOKEN` Actions secret to call
+the authenticated endpoint every 15 minutes. Public-repository minutes are free;
+traffic-driven scheduling remains an emergency fallback.
 
 ### ADR-8 — Anonymous-first shopper identity
 *Why:* forcing signup before the first search would destroy the funnel. Search and

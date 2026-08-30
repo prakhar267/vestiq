@@ -21,6 +21,8 @@ export interface Env {
    * preferred driver — and so tests are not mutating data mid-request.
    */
   SCHEDULER_PIGGYBACK?: string;
+  /** Declares the dependable driver used when piggybacking is disabled. */
+  SCHEDULER_DRIVER?: 'github-actions' | 'cloudflare-cron';
 
   ADMIN_TOKEN?: string;
   GEMINI_API_KEY?: string;

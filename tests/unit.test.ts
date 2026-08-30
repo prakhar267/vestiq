@@ -47,7 +47,33 @@ import { rateIdentity, rateLimit, RULES } from '../src/lib/ratelimit';
 import { applyUrlFilters, validatedSearchParams } from '../src/routes/pages';
 import { drainStylistBuffer } from '../src/routes/api';
 import { filterRail, pagination, sortSelect } from '../src/ui/components';
+import { configurationReadiness } from '../src/lib/readiness';
 import type { Env, ParsedQuery, Product, ResultItem } from '../src/types';
+
+// ============================================================ configuration readiness
+
+describe('configuration readiness', () => {
+  const base = {
+    SITE_URL: 'https://vestiq.example',
+  } as Env;
+
+  it('requires a declared dependable scheduler, not merely disabled piggybacking', () => {
+    expect(configurationReadiness({ ...base, SCHEDULER_PIGGYBACK: '0' }).scheduler.ok).toBe(false);
+    expect(
+      configurationReadiness({
+        ...base,
+        SCHEDULER_PIGGYBACK: '0',
+        SCHEDULER_DRIVER: 'github-actions',
+      }).scheduler.ok,
+    ).toBe(true);
+  });
+
+  it('does not treat traffic piggybacking as a dependable alert driver', () => {
+    const check = configurationReadiness({ ...base, SCHEDULER_PIGGYBACK: '1' }).scheduler;
+    expect(check.ok).toBe(false);
+    expect(check.note).toContain('traffic-driven only');
+  });
+});
 
 // ============================================================ util
 

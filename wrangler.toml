@@ -52,8 +52,8 @@ binding = "AI"
 # caught up on the next one instead of being skipped until the same time tomorrow.
 # See handleScheduled() in src/jobs/index.ts.
 # DISABLED: this account has already used all 5 free-plan cron slots on other
-# Workers, so registering one here fails the deploy. Scheduled work therefore runs
-# via traffic-driven piggybacking plus the manual POST /admin/jobs/tick endpoint.
+# Workers, so registering one here fails the deploy. The public repository's free
+# GitHub Actions scheduler calls POST /admin/jobs/tick every 15 minutes instead.
 #
 # To switch back to a native cron trigger: free a slot (or upgrade to Workers
 # Paid), uncomment the two lines below, redeploy, and disable piggybacking.
@@ -68,10 +68,10 @@ CURRENCY = "INR"
 EMBED_DIM = "384"
 EMBED_VERSION = "1"
 LOG_LEVEL = "info"
-# Traffic-driven scheduling. Enabled because this account has no free cron slots
-# left and GitHub Actions billing is blocked; set to "0" once a real cron trigger
-# or the Actions scheduler is driving /admin/jobs/tick.
-SCHEDULER_PIGGYBACK = "1"
+# The public-repository workflow is the dependable scheduler. Piggybacking is off
+# to keep normal page requests read-only and scheduling ownership unambiguous.
+SCHEDULER_PIGGYBACK = "0"
+SCHEDULER_DRIVER = "github-actions"
 
 # Secrets (set via `wrangler secret put <NAME>`), never in this file:
 #   ADMIN_TOKEN     - required, gates /admin

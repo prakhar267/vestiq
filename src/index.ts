@@ -147,7 +147,7 @@ app.get('/health', async (c) => {
 
 /**
  * Readiness is deliberately stricter than health. A healthy prelaunch Worker
- * may still lack real inventory, outbound email, a native scheduler, or a custom
+ * may still lack real inventory, outbound email, a dependable scheduler, or a custom
  * domain. Monitors page on /health and track /ready as a launch checklist.
  */
 app.get('/ready', async (c) => {

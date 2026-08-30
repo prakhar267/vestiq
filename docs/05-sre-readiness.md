@@ -78,7 +78,7 @@ external dependencies beyond D1.
 | Unhealthy component | `checks.d1.ok = false` | Page |
 | AI fully degraded | `checks.ai.note` contains `heuristic only` | Investigate |
 | Zero-result spike | > 8% over 1 h | Check ingestion + parser |
-| Scheduler stopped | No `scheduler tick complete` in 60 min | Check traffic volume, then force a run with `POST /admin/jobs/tick` |
+| Scheduler stopped | **Scheduler and production health** Action fails or does not run for 60 min | Check the public-repo workflow and `ADMIN_TOKEN`, then force `POST /admin/jobs/tick` |
 | Feed failures | `feed_status = 'failing'` for > 6 h | Contact merchant |
 
 ---
@@ -132,25 +132,17 @@ both of which are bounded by construction:
 
 ## 7. Pre-launch actions for the account owner
 
-Two items I cannot do without account-level changes:
+The public repository's **Scheduler and production health** workflow now checks
+`/health` and drives background work every 15 minutes. It is the primary free
+monitor and scheduler; `SCHEDULER_PIGGYBACK` is disabled. GitHub disables scheduled
+workflows after 60 days without repository activity, so confirm it remains enabled
+during routine operations. A five-minute Better Stack, Pingdom, or Cloudflare
+Notification check remains a useful independent second monitor.
 
-1. **Configure alerting.** Point an external monitor (Better Stack, Pingdom, or a
-   Cloudflare Notification) at `/health` with a 5-minute interval and alert on
-   non-200 or on `"status":"unhealthy"`.
-2. **Get a real scheduler trigger.** Background work is currently carried by
-   ordinary page traffic (`SCHEDULER_PIGGYBACK = "1"`), because all 5 free-plan
-   Cloudflare cron slots on this account are used by other Workers. An external
-   CI scheduler is deliberately not used — it would mean storing a long-lived
-   admin token outside Cloudflare.
-
-   Traffic-driven scheduling is safe and idempotent, but it stops when traffic
-   stops: on a quiet night, feeds are not refreshed and alerts are not dispatched.
-   That is acceptable pre-launch and **not** acceptable once shoppers rely on
-   alerts. Free a cron slot (or upgrade to Workers Paid), uncomment `[triggers]`
-   in `wrangler.toml`, and set `SCHEDULER_PIGGYBACK = "0"`.
-
-   Until then, `POST /admin/jobs/tick` forces a run on demand. See
-   `docs/07-deployment.md` for the driver comparison.
+All five free-plan Cloudflare cron slots are used by other Workers. If one becomes
+available, the Actions driver can be replaced by a native trigger by uncommenting
+`[triggers]`, setting `SCHEDULER_DRIVER = "cloudflare-cron"`, and disabling the
+scheduled workflow. See `docs/07-deployment.md` for the driver comparison.
 
 Also recommended before real traffic: a custom domain (see
 `docs/07-deployment.md`), and adding `GEMINI_API_KEY` to upgrade parse and vision
@@ -167,11 +159,10 @@ npx wrangler deployments list
 npx wrangler rollback --message "reason"
 ```
 
-Rollback is safe for code. **Database migrations are additive only** — every
-statement is `CREATE TABLE/INDEX IF NOT EXISTS`, no destructive DDL — so an older
-Worker version runs unchanged against a newer schema. That property is what makes
-rollback a one-command operation and must be preserved: never write a migration
-that drops or renames a column in use.
+Rollback is safe for code. **Schema migrations are additive only** — no migration
+drops or renames a live column. Applied files are recorded in
+`vestiq_migrations` and never replayed, which also protects one-time data-cleanup
+migrations after real inventory exists. Preserve both properties.
 
 Emergency mitigation without a deploy uses only runtime flags that are actually
 enforced. The paid-placement flag has been removed from free-launch mode.

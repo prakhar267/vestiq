@@ -70,17 +70,24 @@ export function configurationReadiness(env: Env): Record<string, { ok: boolean; 
     customDomain = false;
   }
 
+  const schedulerDriver = env.SCHEDULER_DRIVER;
+  const schedulerOk =
+    schedulerDriver === 'github-actions' || schedulerDriver === 'cloudflare-cron';
+
   return {
     email_delivery: {
       ok: Boolean(env.RESEND_API_KEY),
       note: env.RESEND_API_KEY ? 'Resend configured' : 'RESEND_API_KEY missing',
     },
     scheduler: {
-      ok: env.SCHEDULER_PIGGYBACK !== '1',
-      note:
-        env.SCHEDULER_PIGGYBACK === '1'
-          ? 'traffic-driven; enable a native cron before relying on alerts'
-          : 'native or external driver expected',
+      ok: schedulerOk,
+      note: schedulerOk
+        ? schedulerDriver === 'github-actions'
+          ? 'GitHub Actions every 15 minutes'
+          : 'Cloudflare cron every 15 minutes'
+        : env.SCHEDULER_PIGGYBACK === '1'
+          ? 'traffic-driven only; enable a dependable scheduler before relying on alerts'
+          : 'no dependable scheduler declared',
     },
     custom_domain: {
       ok: customDomain,

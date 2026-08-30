@@ -12,7 +12,7 @@
 | AI | Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`, `@cf/baai/bge-small-en-v1.5`) |
 | Catalogue | Real merchant feeds only; no bundled sample inventory |
 | Vector index | v1, 384-dim int8; rebuilt after approved feed syncs |
-| Scheduler | Traffic-driven (`SCHEDULER_PIGGYBACK`), plus manual `POST /admin/jobs/tick` |
+| Scheduler | GitHub Actions every 15 min, plus manual `POST /admin/jobs/tick` |
 
 Verify at any time:
 ```bash
@@ -99,10 +99,10 @@ duplicating work or losing any.
 
 | Driver | Status here | Notes |
 | --- | --- | --- |
-| **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ✅ active | A small share of page views carries the work in `waitUntil`, at most once per 15 min via a KV claim, with a 5 s budget. Never delays a response. Its only weakness is that no traffic means no maintenance. |
+| **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ❌ disabled | Available as an emergency fallback, but ordinary requests do not own production scheduling. |
 | **Manual** (`POST /admin/jobs/tick`) | ✅ available | Token-gated. Use it to force a run during an incident, or after onboarding a brand, without waiting for traffic. |
 | **Cloudflare cron trigger** | ❌ unavailable | Preferred, but all 5 free-plan cron slots on this account are used by other Workers. `[triggers]` is commented out in `wrangler.toml`. |
-| **GitHub Actions** | ❌ removed, deliberately | A scheduled workflow used to call `/admin/jobs/tick`. It is gone by request: it needed a long-lived admin token stored in GitHub, and on a private repo its minutes are billable. Do not reintroduce it. |
+| **GitHub Actions** | ✅ active | The public repository runs `.github/workflows/scheduler.yml` every 15 minutes at no Actions-minute charge. It also verifies `/health`. |
 
 Free a Cloudflare cron slot (or upgrade to Workers Paid) to get a real trigger;
 then uncomment `[triggers]` in `wrangler.toml` and set `SCHEDULER_PIGGYBACK = "0"`.
@@ -115,8 +115,8 @@ Paid), uncomment `[triggers]` in `wrangler.toml`, set `SCHEDULER_PIGGYBACK = "0"
 and `npm run deploy`. The cron handler calls the same dispatcher, so nothing else
 changes.
 
-No GitHub secret is required for scheduling. CI needs only `CLOUDFLARE_API_TOKEN`
-and `CLOUDFLARE_ACCOUNT_ID` (see CI/CD below).
+The scheduler needs `ADMIN_TOKEN`. CI additionally needs
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see CI/CD below).
 
 ---
 
@@ -124,7 +124,7 @@ and `CLOUDFLARE_ACCOUNT_ID` (see CI/CD below).
 
 `.github/workflows/ci.yml`:
 
-- **every push/PR** → typecheck (worker + client), 197 Vitest tests, 7
+- **every push/PR** → typecheck (worker + client), 199 Vitest tests, 7
   Playwright/Axe journeys, client build, performance budget;
 - **push to `main`** → migrations, deploy, then a **smoke test** that fails the
   deploy unless `/health` reports healthy and `/`, `/search` and `/robots.txt`

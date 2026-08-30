@@ -84,16 +84,14 @@ Work down the arms in order — this is exactly how the launch bugs were found.
 
 Symptom: no `scheduler tick complete` log for over an hour; feeds stale.
 
-Scheduling is traffic-driven: a small share of page views carries the work. The
-most common cause is simply **no traffic**, which is benign — but confirm rather
-than assume.
+Scheduling is driven every 15 minutes by the public repository's **Scheduler and
+production health** workflow.
 
-1. Confirm the driver is enabled: `SCHEDULER_PIGGYBACK = "1"` in `wrangler.toml`,
-   and the deployed Worker has it (`npx wrangler deployments list`).
-2. Check whether any qualifying traffic arrived. Only non-bot `GET` requests
-   outside `/api/*` carry the scheduler, so a quiet night genuinely produces no
-   ticks. `npx wrangler tail vestiq --format pretty` while you load a page.
-3. Force a run by hand — this is the supported manual driver:
+1. Check the workflow in GitHub Actions. GitHub disables scheduled workflows on
+   public repositories after 60 days without repository activity; re-enable it
+   if needed.
+2. Verify the `ADMIN_TOKEN` repository secret matches the Worker secret.
+3. Force a run by hand:
    `curl -X POST -H "authorization: Bearer $ADMIN_TOKEN" $SITE_URL/admin/jobs/tick`
 4. Inspect the queue and interval markers:
    ```bash
@@ -106,9 +104,8 @@ than assume.
    also holds a `cron:driver:last` claim key; deleting it lets the very next page
    view carry a tick instead of waiting out the 15-minute interval.
 
-> There is deliberately **no GitHub Actions scheduler**. It was removed because it
-> required a long-lived admin token stored in GitHub. Do not reintroduce it; use
-> the manual endpoint above, or a real Cloudflare cron trigger once a slot frees.
+Traffic-driven scheduling remains available as a fallback by setting
+`SCHEDULER_PIGGYBACK = "1"`, but it is not the primary production driver.
 
 ## Incident: a merchant's products vanished
 

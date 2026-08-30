@@ -1,7 +1,7 @@
 # Vestiq — QA Report
 
 > Role: QA
-> Suite: 197 Vitest tests (`npm test`) plus 7 Playwright/Axe journeys, all passing
+> Suite: 199 Vitest tests (`npm test`) plus 7 Playwright/Axe journeys, all passing
 > Runtime under test: workerd via `@cloudflare/vitest-pool-workers` — real D1
 > (SQLite + FTS5), real KV semantics, real `Request`/`Response`
 
