@@ -87,12 +87,15 @@ jobs:
           grep -q '"catalogue_integrity":{"ok":true' /tmp/health.json
 
           echo "→ / (must server-render)"
-          curl -sS --max-time 30 "$BASE/" | grep -q 'action="/search"'
+          curl -fsS --max-time 30 -o /tmp/home.html "$BASE/"
+          grep -q 'action="/search"' /tmp/home.html
 
           echo "→ /search (must render a complete server-side result or empty state)"
-          curl -sS --max-time 60 "$BASE/search?q=cotton+kurta" | grep -q '<h1'
+          curl -fsS --max-time 60 -o /tmp/search.html "$BASE/search?q=cotton+kurta"
+          grep -q '<h1' /tmp/search.html
 
           echo "→ /robots.txt"
-          curl -sS --max-time 30 "$BASE/robots.txt" | grep -q 'Sitemap:'
+          curl -fsS --max-time 30 -o /tmp/robots.txt "$BASE/robots.txt"
+          grep -q 'Sitemap:' /tmp/robots.txt
 
           echo "All smoke checks passed."
