@@ -306,8 +306,11 @@ export async function runEmbedBatch(env: Env, log: Logger): Promise<void> {
 
     log.info('embedded batch', { count: rows.length, version: model.version });
 
-    // More to do — chain another job rather than looping past the CPU limit.
-    if (rows.length === EMBED_BATCH) await enqueueJob(env, 'embed', {});
+    // Always chain one more job. A full batch needs the next data batch; a
+    // partial final batch needs a zero-row pass to rebuild and activate the KV
+    // index. Without that finalizer, catalogues smaller than (or not divisible
+    // by) EMBED_BATCH remain permanently in degraded lexical-only search.
+    await enqueueJob(env, 'embed', {});
     return;
   }
 
