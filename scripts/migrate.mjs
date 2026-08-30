@@ -11,9 +11,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
 const remote = process.argv.includes('--remote');
 const DB = 'learnfrench-staging-db'; // must match wrangler.toml database_name
@@ -28,10 +27,10 @@ function wrangler(args) {
 }
 
 function execSql(sql) {
-  const dir = mkdtempSync(join(tmpdir(), 'vestiq-mig-'));
-  const file = join(dir, 'stmt.sql');
-  writeFileSync(file, sql);
-  return wrangler(['d1', 'execute', DB, flag, '--file', file, '--json', '-y']);
+  // `--file` uses D1's bulk-import endpoint, which currently rejects
+  // account-owned API tokens even when they have D1 Write access. These
+  // migrations are small enough for the query endpoint used by `--command`.
+  return execCommand(sql);
 }
 
 function execCommand(sql) {
