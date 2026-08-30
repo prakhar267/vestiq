@@ -469,6 +469,23 @@ adminRoutes.post('/admin/jobs/:action', async (c) => {
       const result = await drainJobs(c.env, log);
       return c.json({ ok: true, action, scheduled, ...result });
     }
+    case 'feed-status': {
+      const [feeds, jobs] = await Promise.all([
+        c.env.DB.prepare(
+          `SELECT f.status, f.rows_in, f.rows_upserted, f.rows_skipped, f.rows_rejected,
+                  f.reject_reasons, f.error, f.started_at, f.finished_at, b.name AS brand_name
+           FROM ${T.feedRuns} f JOIN ${T.brands} b ON b.id = f.brand_id
+           ORDER BY f.started_at DESC LIMIT 10`,
+        ).all<Record<string, unknown>>(),
+        c.env.DB.prepare(
+          `SELECT type, status, attempts, max_attempts, last_error, run_after, updated_at
+           FROM ${T.jobs}
+           WHERE type = 'feed_sync'
+           ORDER BY updated_at DESC LIMIT 10`,
+        ).all<Record<string, unknown>>(),
+      ]);
+      return c.json({ ok: true, action, feeds: feeds.results ?? [], jobs: jobs.results ?? [] });
+    }
     case 'drain': {
       const result = await drainJobs(c.env, log);
       return c.json({ ok: true, action, ...result });

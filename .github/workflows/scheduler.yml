@@ -12,7 +12,7 @@ on:
         required: true
         default: tick
         type: choice
-        options: [tick, drain, embed, feeds, trust, collections, popularity, alerts]
+        options: [tick, drain, embed, feeds, feed-status, trust, collections, popularity, alerts]
 
 concurrency:
   group: production-scheduler
