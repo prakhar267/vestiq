@@ -393,6 +393,25 @@ describe('toParsedQuery', () => {
     );
     expect(out?.price_max).toBe(200_000);
   });
+
+  it('does not turn inferred categories or hallucinated exclusions into hard filters', () => {
+    const exactSeed = heuristicParse('Harry Potter oversized');
+    const out = toParsedQuery(
+      {
+        semantic_text: 'oversized Harry Potter clothing',
+        intent: 'mood',
+        categories: ['jumpsuits', 'sweaters'],
+        style_tags: ['oversized'],
+        exclude_terms: ['Potter'],
+        confidence: 0.8,
+      },
+      exactSeed,
+      'test',
+    );
+    expect(out?.categories).toEqual([]);
+    expect(out?.exclude_terms).toEqual([]);
+    expect(out?.style_tags).toContain('oversized');
+  });
 });
 
 // ============================================================ fusion & ranking
@@ -464,6 +483,15 @@ describe('applyFilters', () => {
     );
     expect(result.kept.map((p) => p.id)).toEqual(['cheap']);
     expect(result.binding).toBe('price_max');
+  });
+
+  it('never returns out-of-stock candidates from any recall arm', () => {
+    const result = applyFilters(
+      [makeProduct({ id: 'live' }), makeProduct({ id: 'sold', availability: 'out_of_stock' })],
+      base,
+    );
+    expect(result.kept.map((p) => p.id)).toEqual(['live']);
+    expect(result.removedBy.availability).toBe(1);
   });
 
   it('excludes negated colours', () => {

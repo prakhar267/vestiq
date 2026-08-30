@@ -184,10 +184,15 @@ export function toParsedQuery(
   return {
     semantic_text: d.semantic_text.trim() || seed.semantic_text,
     intent: isStylingProblem ? 'styling_problem' : ((d.intent as Intent) ?? seed.intent),
-    categories: isStylingProblem ? seed.categories : merge(d.categories, seed.categories),
+    // Categories and exclusions are hard filters. The deterministic parser is
+    // exact on explicit category/negation language, while generative models can
+    // turn a loose aesthetic cue into invented constraints (for example,
+    // interpreting "oversized" as only jumpsuits/sweaters or excluding a proper
+    // noun). Keep model inference in semantic_text and soft attributes instead.
+    categories: seed.categories,
     gender: (d.gender as Gender | undefined) ?? seed.gender,
     colors: merge(d.colors, seed.colors),
-    exclude_colors: merge(d.exclude_colors, seed.exclude_colors),
+    exclude_colors: seed.exclude_colors,
     materials: merge(d.materials, seed.materials),
     occasions: merge(d.occasions, seed.occasions),
     style_tags: merge(d.style_tags, seed.style_tags),
@@ -196,7 +201,7 @@ export function toParsedQuery(
     price_min,
     price_max,
     sizes: merge(d.sizes, seed.sizes, 6),
-    exclude_terms: merge(d.exclude_terms, seed.exclude_terms, 6),
+    exclude_terms: seed.exclude_terms,
     confidence: d.confidence,
     provider,
   };

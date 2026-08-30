@@ -122,6 +122,13 @@ export function applyFilters<T extends FilterableProduct>(
   };
 
   const kept = products.filter((p) => {
+    // Every recall arm must converge on the same shopper-visible inventory.
+    // Lexical and structured SQL already apply this gate; keeping it here also
+    // protects semantic/vector candidates and future recall implementations.
+    if (p.availability === 'out_of_stock') {
+      bump('availability');
+      return false;
+    }
     if (parse.price_max !== undefined && p.price > parse.price_max) {
       bump('price_max');
       return false;

@@ -368,10 +368,12 @@ async function rebuildVectorIndex(
   log: Logger,
 ): Promise<void> {
   const total = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM ${T.products} WHERE status = 'active'`,
+    `SELECT COUNT(*) AS n FROM ${T.products}
+     WHERE status = 'active' AND availability != 'out_of_stock'`,
   ).first<{ n: number }>();
   const embedded = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM ${T.products} WHERE status = 'active' AND embed_version = ?`,
+    `SELECT COUNT(*) AS n FROM ${T.products}
+     WHERE status = 'active' AND availability != 'out_of_stock' AND embed_version = ?`,
   )
     .bind(model.version)
     .first<{ n: number }>();
@@ -389,7 +391,8 @@ async function rebuildVectorIndex(
 
   const res = await env.DB.prepare(
     `SELECT id, embedding FROM ${T.products}
-     WHERE status = 'active' AND embed_version = ? AND embedding IS NOT NULL`,
+     WHERE status = 'active' AND availability != 'out_of_stock'
+       AND embed_version = ? AND embedding IS NOT NULL`,
   )
     .bind(model.version)
     .all<{ id: string; embedding: unknown }>();

@@ -37,8 +37,9 @@ const PARSE_CACHE_TTL = 7 * 24 * 60 * 60; // 7 days (ADR-6)
  * vocabulary-echo parses stayed live after the fix shipped. The version prefix
  * is the invalidation mechanism.
  *   v1 → v2: added looksDegenerate() rejection and styling-problem preservation.
+ *   v2 → v3: hard categories and exclusions now come from deterministic parsing.
  */
-const PARSE_CACHE_VERSION = 'v2';
+const PARSE_CACHE_VERSION = 'v3';
 
 export interface SearchOptions {
   query: string;
