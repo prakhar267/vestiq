@@ -78,7 +78,7 @@ external dependencies beyond D1.
 | Unhealthy component | `checks.d1.ok = false` | Page |
 | AI fully degraded | `checks.ai.note` contains `heuristic only` | Investigate |
 | Zero-result spike | > 8% over 1 h | Check ingestion + parser |
-| Scheduler stopped | No `scheduler tick complete` in 60 min | Check the GitHub workflow |
+| Scheduler stopped | No `scheduler tick complete` in 60 min | Check traffic volume, then force a run with `POST /admin/jobs/tick` |
 | Feed failures | `feed_status = 'failing'` for > 6 h | Contact merchant |
 
 ---
@@ -137,19 +137,20 @@ Two items I cannot do without account-level changes:
 1. **Configure alerting.** Point an external monitor (Better Stack, Pingdom, or a
    Cloudflare Notification) at `/health` with a 5-minute interval and alert on
    non-200 or on `"status":"unhealthy"`.
-2. **Decide the scheduler mechanism.** Background work is currently carried by
-   ordinary page traffic (`SCHEDULER_PIGGYBACK = "1"`), because both preferred
-   drivers are unavailable on this account: all 5 free-plan Cloudflare cron slots
-   are used by other Workers, and GitHub Actions runs are blocked by an Actions
-   billing failure on the GitHub account. Traffic-driven scheduling is safe and
-   idempotent but stops when traffic stops, so pick one:
-   - fix GitHub Actions billing (or make the repo public) — the workflow is already
-     configured and will start working with no code change; **or**
-   - free a Cloudflare cron slot / upgrade to Workers Paid, then re-enable
-     `[triggers]` in `wrangler.toml`.
+2. **Get a real scheduler trigger.** Background work is currently carried by
+   ordinary page traffic (`SCHEDULER_PIGGYBACK = "1"`), because all 5 free-plan
+   Cloudflare cron slots on this account are used by other Workers. An external
+   CI scheduler is deliberately not used — it would mean storing a long-lived
+   admin token outside Cloudflare.
 
-   Then set `SCHEDULER_PIGGYBACK = "0"`. See `docs/07-deployment.md` for the
-   comparison table.
+   Traffic-driven scheduling is safe and idempotent, but it stops when traffic
+   stops: on a quiet night, feeds are not refreshed and alerts are not dispatched.
+   That is acceptable pre-launch and **not** acceptable once shoppers rely on
+   alerts. Free a cron slot (or upgrade to Workers Paid), uncomment `[triggers]`
+   in `wrangler.toml`, and set `SCHEDULER_PIGGYBACK = "0"`.
+
+   Until then, `POST /admin/jobs/tick` forces a run on demand. See
+   `docs/07-deployment.md` for the driver comparison.
 
 Also recommended before real traffic: a custom domain (see
 `docs/07-deployment.md`), and adding `GEMINI_API_KEY` to upgrade parse and vision

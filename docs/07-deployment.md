@@ -12,7 +12,7 @@
 | AI | Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`, `@cf/baai/bge-small-en-v1.5`) |
 | Catalogue | Real merchant feeds only; no bundled sample inventory |
 | Vector index | v1, 384-dim int8; rebuilt after approved feed syncs |
-| Scheduler | GitHub Actions → `POST /admin/jobs/tick` |
+| Scheduler | Traffic-driven (`SCHEDULER_PIGGYBACK`), plus manual `POST /admin/jobs/tick` |
 
 Verify at any time:
 ```bash
@@ -92,23 +92,24 @@ duplicating work or losing any.
 
 | Driver | Status here | Notes |
 | --- | --- | --- |
-| **Cloudflare cron trigger** | ❌ unavailable | Preferred, but all 5 free-plan cron slots on this account are used by other Workers. `[triggers]` is commented out in `wrangler.toml`. |
-| **GitHub Actions** (`.github/workflows/scheduler.yml`) | ⚠️ configured, blocked | Calls `POST /admin/jobs/tick` every 15 min. Secrets are set, but runs currently fail with *"recent account payments have failed or your spending limit needs to be increased"* — private-repo Actions minutes are billable. Fix billing, or make the repo public, and it starts working with no code change. |
 | **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ✅ active | A small share of page views carries the work in `waitUntil`, at most once per 15 min via a KV claim, with a 5 s budget. Never delays a response. Its only weakness is that no traffic means no maintenance. |
+| **Manual** (`POST /admin/jobs/tick`) | ✅ available | Token-gated. Use it to force a run during an incident, or after onboarding a brand, without waiting for traffic. |
+| **Cloudflare cron trigger** | ❌ unavailable | Preferred, but all 5 free-plan cron slots on this account are used by other Workers. `[triggers]` is commented out in `wrangler.toml`. |
+| **GitHub Actions** | ❌ removed, deliberately | A scheduled workflow used to call `/admin/jobs/tick`. It is gone by request: it needed a long-lived admin token stored in GitHub, and on a private repo its minutes are billable. Do not reintroduce it. |
 
-Once a cron slot or Actions billing is available, set `SCHEDULER_PIGGYBACK = "0"`
-and enable the preferred driver.
+Free a Cloudflare cron slot (or upgrade to Workers Paid) to get a real trigger;
+then uncomment `[triggers]` in `wrangler.toml` and set `SCHEDULER_PIGGYBACK = "0"`.
 
 `POST /admin/jobs/tick` runs `runScheduledTasks()` — **the identical code path** the
 cron handler uses.
 
-Required GitHub configuration:
-- repo secret **`ADMIN_TOKEN`** — must match the Worker secret;
-- repo variable `SITE_URL` (optional; defaults to the workers.dev URL).
+To switch to a native Cloudflare cron: free a trigger slot (or upgrade to Workers
+Paid), uncomment `[triggers]` in `wrangler.toml`, set `SCHEDULER_PIGGYBACK = "0"`,
+and `npm run deploy`. The cron handler calls the same dispatcher, so nothing else
+changes.
 
-To switch back to a native Cloudflare cron: free a trigger slot (or upgrade to
-Workers Paid), uncomment `[triggers]` in `wrangler.toml`, `npm run deploy`, then
-disable the Scheduler workflow. Nothing else changes.
+No GitHub secret is required for scheduling. CI needs only `CLOUDFLARE_API_TOKEN`
+and `CLOUDFLARE_ACCOUNT_ID` (see CI/CD below).
 
 ---
 

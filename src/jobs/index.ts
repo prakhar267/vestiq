@@ -789,7 +789,7 @@ export async function handleScheduled(event: ScheduledController, env: Env): Pro
 /**
  * Run whatever is due. Called by the cron handler and, when no cron slot is
  * available on the account, by `POST /admin/jobs/tick` from an external
- * scheduler (see .github/workflows/scheduler.yml). Both paths are identical, so
+ * scheduler or an operator during an incident. Both paths are identical, so
  * moving between them changes nothing about behaviour.
  */
 export async function runScheduledTasks(

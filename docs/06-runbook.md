@@ -84,10 +84,17 @@ Work down the arms in order — this is exactly how the launch bugs were found.
 
 Symptom: no `scheduler tick complete` log for over an hour; feeds stale.
 
-1. Check the **Scheduler** workflow in GitHub Actions. GitHub disables scheduled
-   workflows on repos with no activity for 60 days — re-enable it.
-2. Verify the `ADMIN_TOKEN` repo secret still matches the Worker secret.
-3. Run it by hand: `curl -X POST -H "authorization: Bearer $ADMIN_TOKEN" $SITE_URL/admin/jobs/tick`
+Scheduling is traffic-driven: a small share of page views carries the work. The
+most common cause is simply **no traffic**, which is benign — but confirm rather
+than assume.
+
+1. Confirm the driver is enabled: `SCHEDULER_PIGGYBACK = "1"` in `wrangler.toml`,
+   and the deployed Worker has it (`npx wrangler deployments list`).
+2. Check whether any qualifying traffic arrived. Only non-bot `GET` requests
+   outside `/api/*` carry the scheduler, so a quiet night genuinely produces no
+   ticks. `npx wrangler tail vestiq --format pretty` while you load a page.
+3. Force a run by hand — this is the supported manual driver:
+   `curl -X POST -H "authorization: Bearer $ADMIN_TOKEN" $SITE_URL/admin/jobs/tick`
 4. Inspect the queue and interval markers:
    ```bash
    npx wrangler d1 execute learnfrench-staging-db --remote \
@@ -95,7 +102,13 @@ Symptom: no `scheduler tick complete` log for over an hour; feeds stale.
    npx wrangler kv key list --namespace-id f66a3a5800ec49f29737a4bf9c3871e2 --remote --prefix "cron:last:"
    ```
    Jobs stuck in `running` are recovered automatically after 5 minutes. To force a
-   task to run now, delete its `cron:last:<name>` marker.
+   task to run now, delete its `cron:last:<name>` marker. The piggyback driver
+   also holds a `cron:driver:last` claim key; deleting it lets the very next page
+   view carry a tick instead of waiting out the 15-minute interval.
+
+> There is deliberately **no GitHub Actions scheduler**. It was removed because it
+> required a long-lived admin token stored in GitHub. Do not reintroduce it; use
+> the manual endpoint above, or a real Cloudflare cron trigger once a slot frees.
 
 ## Incident: a merchant's products vanished
 

@@ -169,8 +169,10 @@ hash (~70% hit rate); result HTML cached only 300s.
 ### ADR-7 — Interval dispatcher + job table instead of Queues
 *Why:* `vestiq_jobs` plus an idempotent dispatcher gives attempt counting and
 exponential backoff without adding another runtime dependency. The dispatcher can
-be triggered by GitHub Actions, one Cloudflare cron, an authenticated admin call,
-or the traffic-driven fallback. Per-task KV markers prevent duplicate scheduled work.
+be triggered by a Cloudflare cron, an authenticated admin call, or the
+traffic-driven fallback. Per-task KV markers prevent duplicate scheduled work.
+An external CI scheduler was deliberately ruled out: it would require storing a
+long-lived admin token outside Cloudflare.
 
 ### ADR-8 — Anonymous shopper identity
 *Why:* forcing signup before the first search would destroy the funnel. Search and
