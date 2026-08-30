@@ -1,0 +1,50 @@
+name: Activate validated brand
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand_id:
+        description: Internal brand id to activate after a successful feed sync
+        required: true
+        type: string
+
+concurrency:
+  group: production-brand-activation
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Activate through the audited admin gate
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          BRAND_ID: ${{ inputs.brand_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_TOKEN:-}" ] || [ -z "${BRAND_ID:-}" ]; then
+            echo "::error::ADMIN_TOKEN and brand_id are required."
+            exit 1
+          fi
+
+          STATUS=$(curl -sS -X POST -o /tmp/activation.html -w '%{http_code}' \
+            --max-time 30 \
+            -H "authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data-urlencode 'status=active' \
+            "${SITE_URL%/}/admin/brands/${BRAND_ID}/status")
+          test "$STATUS" = "302"
+
+      - name: Verify real inventory is shopper-visible
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+        run: |
+          set -euo pipefail
+          STATUS=$(curl -sS -o /tmp/ready.json -w '%{http_code}' --max-time 30 \
+            "${SITE_URL%/}/ready")
+          cat /tmp/ready.json
+          grep -q '"real_inventory":{"ok":true' /tmp/ready.json
+          test "$STATUS" = "200" || test "$STATUS" = "503"
