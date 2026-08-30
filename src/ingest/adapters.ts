@@ -111,7 +111,9 @@ async function safeJsonPostResult(raw: string, payload: unknown): Promise<SafeFe
   try {
     const res = await fetch(endpoint.toString(), {
       method: 'POST',
-      redirect: 'error',
+      // Workers does not implement RequestRedirect "error". Manual mode keeps
+      // this fixed-host POST from ever following a redirect to another origin.
+      redirect: 'manual',
       signal: controller.signal,
       headers: {
         accept: 'application/json',
@@ -120,6 +122,9 @@ async function safeJsonPostResult(raw: string, payload: unknown): Promise<SafeFe
       },
       body: JSON.stringify(payload),
     });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(`Souled Store API redirect refused: ${res.status}`);
+    }
     if (!res.ok) throw new Error(`feed fetch failed: ${res.status}`);
 
     const declared = parseInt(res.headers.get('content-length') ?? '0', 10);

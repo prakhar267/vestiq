@@ -1062,11 +1062,11 @@ describe('The Souled Store collection adapter', () => {
 
   it('fetches every collection page and rejects products outside the requested artist', async () => {
     const bodies = [listing(1, 2, [product(1)]), listing(2, 2, [product(2), product(3, 'other')])];
-    const requests: { url: string; body: string }[] = [];
+    const requests: { url: string; body: string; redirect?: string }[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const body = String(init?.body ?? '');
-      requests.push({ url, body });
+      requests.push({ url, body, redirect: init?.redirect });
       return new Response(bodies[requests.length - 1]);
     });
 
@@ -1078,6 +1078,7 @@ describe('The Souled Store collection adapter', () => {
       expect(result.items.map((item) => item.external_id)).toEqual(['1', '2']);
       expect(requests).toHaveLength(2);
       expect(requests.every((request) => request.url === SOULED_STORE_API)).toBe(true);
+      expect(requests.every((request) => request.redirect === 'manual')).toBe(true);
       expect(requests[0].body).toContain(`size: ${SOULED_STORE_PAGE_SIZE}`);
       expect(requests[1].body).toContain('page: 2');
     } finally {
