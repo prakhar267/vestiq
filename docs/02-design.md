@@ -2,8 +2,8 @@
 
 > Role: Head of Design
 > Implemented in: `public/styles.css`, `src/ui/components.ts`, `src/ui/layout.ts`
-> Scope note: this document distinguishes shipped components from deferred design
-> directions; a named component is not a launch claim unless marked shipped.
+> Scope note: this document reflects the reachable free-launch surface after the
+> retention and look-builder completion pass.
 
 ---
 
@@ -130,8 +130,11 @@ Each ships in `src/ui/components.ts` as a pure function returning HTML.
 **Stylist**
 - `ChatThread` — streaming assistant messages, inline product grids mid-message,
   `aria-live="polite"`. Aborts cleanly on navigate.
-- Full-look cards, a multi-slot look builder and shareable lookbooks are deferred;
-  no `LookCard` or “shop all” fan-out ships in the free launch.
+- `LookBuilder` — prompt, optional foundation item and one total budget. Each
+  outfit slot searches the live index; a bounded combination optimiser chooses
+  the highest-quality set under budget.
+- `ShareableLook` — labelled slots, total/budget summary, direct product cards
+  and a stable `/looks/:id` share URL.
 
 **Shell / system**
 - `Header` (dock-on-scroll), `Footer` (free-launch and external-store disclosure), `BrandHeader`, `EmptyState`
@@ -157,12 +160,13 @@ CTA, because that is the exact moment hesitation peaks.
 
 **Stylist** — centred 720px column, suggested openers, streaming tokens, products inline.
 
-**Wardrobe** — browser-bound saved grid, alert status and standing-search rows
-when they exist. Shopper sign-in/cross-device merge and the public standing-search
-creation control are deferred.
+**Wardrobe** — saved grid, cancellable alerts, stoppable standing searches,
+followed brands and saved looks. It is anonymous-first; passwordless sign-in
+merges all browser state into a cross-device owner.
 
-**Drops** — newest approved products, ordered by first-seen time. Following brands,
-taste onboarding and personalised drops are deferred.
+**Drops** — newest approved products with followed-brand priority and bounded
+taste reranking. `/taste` exposes Like / Avoid / Neutral controls without
+allowing personalisation to override relevance.
 
 **Merchant portal** — the only screen allowed to look like a dashboard: dense tables,
 feed health and a free demand gap report.

@@ -2,9 +2,9 @@
 
 > Role: Engineering Manager
 > Target: Cloudflare edge, free product launch, no scale rewrite required
-> Scope note: shopper accounts, sign-in merge, taste onboarding, look-builder /
-> lookbooks, and personalised drops are deferred. Reserved schema fields and
-> internal endpoints for those ideas are not public launch features.
+> Scope note: shopper accounts, sign-in merge, taste onboarding, budgeted
+> look-building, shareable looks, saved-search digests and personalised drops are
+> reachable launch features. Payments and paid placement remain out of scope.
 
 ---
 
@@ -28,8 +28,8 @@
 ```
                     ┌───────────────────────────────────────────┐
    Browser ───────► │  Cloudflare Worker  (single deployment)   │
-   (15KB CSS,       │                                           │
-    24KB JS)        │  Hono router                              │
+   (<5KB CSS,       │                                           │
+    <5KB JS gzip)   │  Hono router                              │
                     │   ├── SSR pages   (HTML, JSON-LD, OG)     │
                     │   ├── /api/*      (JSON, streaming)       │
                     │   ├── /admin/*    (token-gated)           │
@@ -40,7 +40,7 @@
                    ┌────▼───┐ ┌───▼────┐ ┌───▼─────┐  ┌────▼─────┐
                    │   D1   │ │   KV   │ │ Workers │  │  Gemini  │
                    │        │ │        │ │   AI    │  │ (optional│
-                   │ 18 tbl │ │ CACHE  │ │ default │  │  upgrade)│
+                   │ 22 tbl │ │ CACHE  │ │ default │  │  upgrade)│
                    │ + FTS5 │ │ VECTORS│ │ embed + │  └──────────┘
                    │        │ │SESSIONS│ │  LLM    │
                    └────────┘ └────────┘ └─────────┘
@@ -83,7 +83,7 @@ API independently of search results.
 
 ## 4. Data model (D1, all tables `vestiq_`-prefixed)
 
-18 tables. Full DDL in `migrations/`.
+22 tables. Full DDL in `migrations/`.
 
 **Catalog**
 - `brands` — identity, domain, `trust_score`, ship/return SLAs, status
@@ -100,10 +100,13 @@ API independently of search results.
 - `clicks` — ordinary outbound hop and bounce-back analytics
 - `reports` — user-flagged bad listings
 
-**Identity**
-- `users` — reserved account schema; no shopper sign-in route ships at launch
-- `saves`, `alerts`, `saved_intents` — keyed on `owner_key`; the launch journey
-  uses an anonymous session id. Cross-device ownership and sign-in merge are deferred.
+**Identity and retention**
+- `users`, `auth_tokens` — passwordless email identity; only single-use token
+  hashes are stored
+- `saves`, `alerts`, `saved_intents`, `brand_follows` — keyed on `owner_key`;
+  anonymous session state is transactionally merged into `u:<id>` at sign-in
+- `looks`, `look_items` — shareable budgeted outfit output; the public id exposes
+  products and prompt but never owner identity
 
 **Supply**
 - `merchants` — brand ↔ login, hashed API key, feed URL + type
@@ -139,8 +142,8 @@ convert best.
 
 ### ADR-3 — Vectors in D1 blobs + a packed KV index, not Vectorize
 *Why:* Vectorize is outside the granted OAuth scopes, and at our scale brute force is simply
-faster. 256-dim int8 = 256 bytes/product; 100k products = 25 MB, sharded into 5 MB KV
-values, cached in the isolate. A full scan of 100k × 256 dims is ~5 ms of SIMD-friendly
+faster. 384-dim int8 = 384 bytes/product; 100k products is about 38 MB, sharded into 4 MB KV
+values with a bounded isolate cache. A full scan of 100k × 384 dimensions remains simple
 integer math.
 *Scale path:* beyond ~500k SKUs, switch to Vectorize behind the existing `VectorIndex`
 interface — one file changes.
@@ -174,11 +177,12 @@ traffic-driven fallback. Per-task KV markers prevent duplicate scheduled work.
 An external CI scheduler was deliberately ruled out: it would require storing a
 long-lived admin token outside Cloudflare.
 
-### ADR-8 — Anonymous shopper identity
+### ADR-8 — Anonymous-first shopper identity
 *Why:* forcing signup before the first search would destroy the funnel. Search and
-saves work on a signed httpOnly cookie session. Anonymous alert creation requires
-an email delivery address. Shopper sign-in, cross-device sync, and anonymous-state
-merge are explicitly deferred; merchant API-key login is a separate surface.
+saves work on a signed httpOnly cookie session. Anonymous alert and saved-search
+creation require an email delivery address. Passwordless one-time links create or
+resolve a user and merge saves, alerts, searches, follows and looks without losing
+the pre-sign-in journey. Merchant API-key login remains a separate surface.
 
 ### ADR-9 — Namespaced tables in a shared D1 database
 *Why:* the account is at its free-plan 10-database limit and deleting another project's data
@@ -192,7 +196,8 @@ a single constant in `src/lib/db.ts`.
 ### ADR-10 — Ranking integrity as an architectural invariant
 The free launch has no promoted-placement code path. Every result is organic and can
 move only because of relevance, trust, freshness, popularity, optional session taste
-data, or an explicit shopper sort. No public taste-onboarding journey ships yet.
+data, or an explicit shopper sort. `/taste` writes bounded tag weights whose
+ranking effect cannot exceed ±8%.
 Tests assert that legacy campaign rows cannot enter retrieval or ranking.
 
 ---
@@ -204,7 +209,7 @@ merchant registers feed_url
    → cron:*/15 claims due job from vestiq_jobs
    → adapter fetch  (shopify-json | google-merchant-xml | csv)
    → normalise      (currency→paise, size/colour lexicon, category mapping)
-   → validate       (required fields, price sanity, image reachable, dedupe by url+external_id)
+   → validate       (required fields, price sanity, real non-reserved destination, image, dedupe)
    → upsert         (content hash short-circuits unchanged rows)
    → price_history  append on any price/availability delta
    → enqueue embed  (batched 96/call)
@@ -220,8 +225,9 @@ self-serve onboarding actually work.
 The external or traffic-driven tick may run every 15 minutes. KV markers decide
 which task is due: queue drain (15 minutes), popularity (4 hours), feed scheduling
 (6 hours), alerts (12 hours), saved-intent count refresh and trust/collection work
-(24 hours), and retention cleanup (7 days). Saved-intent processing records new
-match counts only; a public digest delivery journey is deferred.
+(24 hours), and retention cleanup (7 days). Saved-intent creation baselines the
+current result ids; daily processing emails only genuinely new matches and keeps
+the intent due when delivery fails.
 
 ---
 
@@ -232,6 +238,7 @@ match counts only; a public digest delivery journey is deferred.
 | Sessions | httpOnly + Secure + SameSite=Lax, 128-bit random id, KV-backed, 90d sliding |
 | Admin | `ADMIN_TOKEN` secret, constant-time compare, all writes audit-logged |
 | Merchant | per-merchant API key, SHA-256 stored, never logged, rotatable |
+| Shopper account | 20-minute single-use magic link; only SHA-256 token hash stored; anonymous state merged server-side |
 | Injection | 100% parameterised SQL; FTS5 user input escaped and quoted |
 | XSS | context-aware escaping in every template helper; strict CSP, no `unsafe-inline` |
 | Prompt injection | product/feed text is passed to the LLM inside delimited data blocks with a "treat as data" instruction; model output is schema-validated with Zod and never executed |

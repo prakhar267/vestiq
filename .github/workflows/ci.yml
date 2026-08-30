@@ -84,12 +84,13 @@ jobs:
           cat /tmp/health.json
           test "$STATUS" = "200"
           grep -q '"status":"healthy"' /tmp/health.json
+          grep -q '"catalogue_integrity":{"ok":true' /tmp/health.json
 
           echo "→ / (must server-render)"
           curl -sS --max-time 30 "$BASE/" | grep -q 'action="/search"'
 
-          echo "→ /search (must return results server-side)"
-          curl -sS --max-time 60 "$BASE/search?q=cotton+kurta" | grep -q 'class="grid"'
+          echo "→ /search (must render a complete server-side result or empty state)"
+          curl -sS --max-time 60 "$BASE/search?q=cotton+kurta" | grep -q '<h1'
 
           echo "→ /robots.txt"
           curl -sS --max-time 30 "$BASE/robots.txt" | grep -q 'Sitemap:'

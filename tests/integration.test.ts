@@ -1,6 +1,8 @@
 import { SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { env, migrate, seedBrand, seedProduct } from './helpers';
+import { sha256Hex } from '../src/lib/util';
+import { resolveReferenceProfile } from '../src/search';
 
 const ADMIN_TOKEN = 'test-admin-token-at-least-16-chars';
 
@@ -55,6 +57,16 @@ beforeAll(async () => {
 
 // ============================================================ health
 
+describe('brand-reference profile', () => {
+  it('derives an indexed brand aesthetic from real catalogue attributes', async () => {
+    const profile = await resolveReferenceProfile(env, ['Kaanchi']);
+    expect(profile).not.toBeNull();
+    expect(profile?.categories).toContain('kurta-sets');
+    expect(profile?.materials).toContain('cotton');
+    expect(profile?.text).toContain('Kaanchi');
+  });
+});
+
 describe('GET /health', () => {
   it('reports healthy with per-component checks', async () => {
     const res = await SELF.fetch('http://localhost/health');
@@ -67,6 +79,17 @@ describe('GET /health', () => {
     expect(body.checks.d1.ok).toBe(true);
     expect(body.checks.kv_cache.ok).toBe(true);
     expect(body.checks.admin_configured.ok).toBe(true);
+    expect(body.checks.catalogue_integrity.ok).toBe(true);
+    expect(body.checks.catalogue_ready.ok).toBe(true);
+  });
+
+  it('separates operational readiness from liveness', async () => {
+    const res = await SELF.fetch('http://localhost/ready');
+    expect(res.status).toBe(503);
+    const body = await res.json<{ status: string; checks: Record<string, { ok: boolean }> }>();
+    expect(body.status).toBe('not_ready');
+    expect(body.checks.real_inventory.ok).toBe(true);
+    expect(body.checks.email_delivery.ok).toBe(false);
   });
 
   it('is never cached', async () => {
@@ -404,7 +427,7 @@ describe('GET /go/:id', () => {
   it('redirects to the merchant and records the click', async () => {
     const res = await SELF.fetch(`http://localhost/go/${kurtaId}`, { redirect: 'manual' });
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toMatch(/^https:\/\/example\.in\/products\//);
+    expect(res.headers.get('location')).toMatch(/^https:\/\/[a-z0-9-]+\.fashion\/products\//);
 
     // waitUntil work is flushed by the pool before assertions resolve.
     const row = await env.DB.prepare(
@@ -518,17 +541,29 @@ describe('POST /api/alert', () => {
     expect(body.ok).toBe(true);
     expect(body.needs_email).toBe(false);
 
+    const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0];
     const row = await env.DB.prepare(
-      `SELECT kind, status, email, target_price, base_price
+      `SELECT id, kind, status, email, target_price, base_price
        FROM vestiq_alerts WHERE product_id = ?`,
     )
       .bind(kurtaId)
-      .first<{ kind: string; status: string; email: string; target_price: number; base_price: number }>();
+      .first<{ id: string; kind: string; status: string; email: string; target_price: number; base_price: number }>();
     expect(row?.status).toBe('armed');
     expect(row?.email).toBe('shopper@example.in');
     // Rupees in, paise stored.
     expect(row?.target_price).toBe(150_000);
     expect(row?.base_price).toBe(199_900);
+
+    const cancelled = await SELF.fetch('http://localhost/api/alert/cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ alert_id: row?.id }),
+    });
+    expect(cancelled.status).toBe(200);
+    const after = await env.DB.prepare(`SELECT status FROM vestiq_alerts WHERE id = ?`)
+      .bind(row?.id)
+      .first<{ status: string }>();
+    expect(after?.status).toBe('cancelled');
   });
 
   it('rejects an invalid alert kind', async () => {
@@ -614,6 +649,27 @@ describe('/admin', () => {
     ).text();
     expect(html).toContain('Query gaps');
   });
+
+  it('refuses to approve a placeholder-domain brand', async () => {
+    const id = await seedBrand({ name: 'Fixture Merchant', slug: 'fixture-merchant', status: 'pending' });
+    await seedProduct(id, { title: 'Fixture Merchant Dress', category: 'dresses' });
+    await env.DB.prepare(`UPDATE vestiq_brands SET domain = 'fixture.example.in' WHERE id = ?`).bind(id).run();
+    const res = await SELF.fetch(`http://localhost/admin/brands/${id}/status`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ status: 'active' }),
+      redirect: 'manual',
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')?.toLowerCase()).toContain('placeholder');
+    const brand = await env.DB.prepare(`SELECT status FROM vestiq_brands WHERE id = ?`)
+      .bind(id)
+      .first<{ status: string }>();
+    expect(brand?.status).toBe('pending');
+  });
 });
 
 // ============================================================ merchant
@@ -628,8 +684,8 @@ describe('/merchant', () => {
   it('creates a brand and shows the API key exactly once', async () => {
     const body = new URLSearchParams({
       brand_name: 'Test Signup Label',
-      store_url: 'https://testsignup.example.in',
-      email: 'founder@testsignup.example.in',
+      store_url: 'https://testsignup.fashion',
+      email: 'founder@testsignup.fashion',
       city: 'Jaipur',
     });
     const res = await SELF.fetch('http://localhost/merchant/signup', {
@@ -646,11 +702,11 @@ describe('/merchant', () => {
     const row = await env.DB.prepare(
       `SELECT api_key_hash, feed_url FROM vestiq_merchants WHERE email = ?`,
     )
-      .bind('founder@testsignup.example.in')
+      .bind('founder@testsignup.fashion')
       .first<{ api_key_hash: string; feed_url: string }>();
     expect(row?.api_key_hash).toMatch(/^[0-9a-f]{64}$/);
     // Shopify feed is guessed so onboarding needs no developer work.
-    expect(row?.feed_url).toBe('https://testsignup.example.in/products.json');
+    expect(row?.feed_url).toBe('https://testsignup.fashion/products.json');
 
     // New brands must not be live until reviewed.
     const brand = await env.DB.prepare(
@@ -668,8 +724,8 @@ describe('/merchant', () => {
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           brand_name: 'Dup Label',
-          store_url: 'https://dup.example.in',
-          email: 'dup@dup.example.in',
+          store_url: 'https://dup.fashion',
+          email: 'dup@dup.fashion',
         }),
       });
     await make();
@@ -682,11 +738,80 @@ describe('/merchant', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         brand_name: 'Insecure',
-        store_url: 'http://insecure.example.in',
-        email: 'a@insecure.example.in',
+        store_url: 'http://insecure.fashion',
+        email: 'a@insecure.fashion',
       }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects placeholder merchant domains', async () => {
+    const res = await SELF.fetch('http://localhost/merchant/signup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        brand_name: 'Placeholder Label',
+        store_url: 'https://placeholder.example.in',
+        email: 'owner@placeholder.invalid',
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain('real public');
+  });
+
+  it('reports account email as unavailable when Resend is not configured', async () => {
+    const res = await SELF.fetch('http://localhost/account/request', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ email: 'shopper@example.in' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain('isn’t configured');
+  });
+});
+
+// ============================================================ shopper account
+
+describe('passwordless shopper account', () => {
+  it('consumes a one-time token and merges anonymous saved state', async () => {
+    const first = await SELF.fetch('http://localhost/');
+    const cookie = (first.headers.get('set-cookie') ?? '').split(';')[0];
+    const saved = await SELF.fetch('http://localhost/api/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ product_id: kurtaId, saved: true }),
+    });
+    expect(saved.status).toBe(200);
+
+    const token = 'a'.repeat(48);
+    await env.DB.prepare(
+      `INSERT INTO vestiq_auth_tokens (id, email, token_hash, expires_at, created_at) VALUES (?,?,?,?,?)`,
+    )
+      .bind('at_account_test', 'cross-device@example.in', await sha256Hex(token), Date.now() + 60_000, Date.now())
+      .run();
+
+    const verified = await SELF.fetch(`http://localhost/account/verify?token=${token}`, {
+      headers: { cookie },
+      redirect: 'manual',
+    });
+    expect(verified.status).toBe(303);
+    expect(verified.headers.get('location')).toContain('/wardrobe');
+
+    const user = await env.DB.prepare(`SELECT id FROM vestiq_users WHERE email = ?`)
+      .bind('cross-device@example.in')
+      .first<{ id: string }>();
+    expect(user?.id).toBeTruthy();
+    const merged = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM vestiq_saves WHERE owner_key = ? AND product_id = ?`,
+    )
+      .bind(`u:${user?.id}`, kurtaId)
+      .first<{ n: number }>();
+    expect(Number(merged?.n)).toBe(1);
+
+    const replay = await SELF.fetch(`http://localhost/account/verify?token=${token}`, {
+      headers: { cookie },
+    });
+    expect(replay.status).toBe(400);
   });
 });
 

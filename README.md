@@ -40,18 +40,18 @@ filter set.
 **Trust** — per-brand trust scores, `last_verified_at` on every listing, liveness
 probes on click-hot items, and one-tap problem reports queued for moderation.
 
-**Retention** — an anonymous, browser-bound wardrobe plus price-drop and
-back-in-stock alerts. An email address is requested only when an anonymous
-shopper arms an alert. Shopper accounts, cross-device merge, public saved-search
-controls and personalised drops are deferred from the free launch.
+**Retention** — a browser-first wardrobe, cancellable price/back-in-stock alerts,
+followed brands, daily saved-search digests, explicit taste controls and
+personalised drops. Passwordless email accounts merge anonymous state so the
+same wardrobe is available across devices.
 
 **Supply side** — free self-serve merchant portal: paste a store URL, inspect feed
 health with per-row rejection reasons, and use a demand gap report ("searches in
 your categories that someone else won").
 
 **Stylist** — streaming multi-turn chat that calls our own search and renders live
-product grids inline. Full-look optimisation and shareable lookbooks are roadmap
-work, not launch features.
+product grids inline, plus a full-look builder that searches outfit slots,
+optimises the combination against one total budget, and saves a shareable look.
 
 **SEO as the primary channel** — everything is server-rendered on the first byte,
 with JSON-LD, partitioned sitemaps, and programmatic collection pages that are only
@@ -61,13 +61,13 @@ marked indexable at ≥12 genuinely matching items.
 
 ## Architecture
 
-One Cloudflare Worker. No client framework — **4.1 KB of JS and 4.7 KB of CSS**,
+One Cloudflare Worker. No client framework — **4.9 KB of JS and 4.9 KB of CSS**,
 against budgets of 24 KB and 14 KB enforced in CI. On a discovery product the
 first paint *is* the pitch, so a hydration bundle would cost more conversions than
 any interaction it buys.
 
 ```
-Browser ─► Worker (Hono) ─┬─► D1      18 tables + FTS5
+Browser ─► Worker (Hono) ─┬─► D1      22 product tables + FTS5
                           ├─► KV      cache · vectors · sessions
                           ├─► Workers AI   parse · embed · vision · chat
                           └─► Gemini       optional upgrade
@@ -166,8 +166,10 @@ from the independent brand on its own website.
 
 ## Status
 
-The application is configured for a real-catalogue-only launch. Migration
-`0002_free_launch_cleanup.sql` removes the previous invented catalogue and all
-paid-placement settings. Onboard and approve real brands before opening traffic,
-then add a custom domain and configure `/health` alerting — see
+The application is configured for a real-catalogue-only launch. Migrations
+`0002_free_launch_cleanup.sql` and `0003_launch_integrity_and_retention.sql`
+remove both generations of invented catalogue data, block reserved destinations,
+and preserve only real merchant inventory. `/health` pages on contamination;
+`/ready` reports inventory, email, scheduler, domain and AI launch readiness.
+Onboard and approve real brands before opening traffic, then add a custom domain and configure `/health` alerting — see
 [`docs/05-sre-readiness.md`](docs/05-sre-readiness.md) §7.

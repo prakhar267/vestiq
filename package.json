@@ -21,6 +21,7 @@
     "deploy": "npm run build:client && wrangler deploy",
     "tail": "wrangler tail",
     "check:budget": "node scripts/check-budget.mjs",
+    "check:launch": "node scripts/check-launch-readiness.mjs",
     "verify": "npm run typecheck && npm run test && npm run test:e2e && npm run check:budget"
   },
   "dependencies": {

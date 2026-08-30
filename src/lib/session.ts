@@ -114,34 +114,38 @@ export function ownerKey(session: SessionData): string {
 }
 
 /**
- * Merge anonymous state into a user account on sign-in.
- * `INSERT OR IGNORE` then delete: if the user already saved an item on another
- * device, keep theirs and discard the duplicate rather than failing the merge.
+ * Merge anonymous state into a user account on sign-in. Duplicate natural keys
+ * are removed first, then the original rows are reassigned in place so their
+ * primary keys and all non-duplicate state survive the merge.
  */
 export async function mergeOwner(env: Env, fromKey: string, toKey: string): Promise<void> {
   if (fromKey === toKey) return;
   const { T } = await import('./db');
   const stmts = [
-    `INSERT OR IGNORE INTO ${T.saves} (id, owner_key, product_id, note, created_at)
-       SELECT id, ?, product_id, note, created_at FROM ${T.saves} WHERE owner_key = ?`,
-    `DELETE FROM ${T.saves} WHERE owner_key = ?`,
-    `INSERT OR IGNORE INTO ${T.alerts}
-       (id, owner_key, product_id, kind, target_price, base_price, email, status, created_at, fired_at)
-       SELECT id, ?, product_id, kind, target_price, base_price, email, status, created_at, fired_at
-       FROM ${T.alerts} WHERE owner_key = ?`,
-    `DELETE FROM ${T.alerts} WHERE owner_key = ?`,
-    `INSERT OR IGNORE INTO ${T.savedIntents}
-       (id, owner_key, label, query_raw, parse, email, last_run_at, last_count, seen_ids, status, created_at)
-       SELECT id, ?, label, query_raw, parse, email, last_run_at, last_count, seen_ids, status, created_at
-       FROM ${T.savedIntents} WHERE owner_key = ?`,
-    `DELETE FROM ${T.savedIntents} WHERE owner_key = ?`,
+    `DELETE FROM ${T.saves} WHERE owner_key = ? AND product_id IN
+       (SELECT product_id FROM ${T.saves} WHERE owner_key = ?)`,
+    `UPDATE ${T.saves} SET owner_key = ? WHERE owner_key = ?`,
+    `DELETE FROM ${T.alerts} WHERE owner_key = ? AND EXISTS (
+       SELECT 1 FROM ${T.alerts} target WHERE target.owner_key = ?
+         AND target.product_id = ${T.alerts}.product_id AND target.kind = ${T.alerts}.kind)`,
+    `UPDATE ${T.alerts} SET owner_key = ? WHERE owner_key = ?`,
+    `DELETE FROM ${T.savedIntents} WHERE owner_key = ? AND query_raw IN
+       (SELECT query_raw FROM ${T.savedIntents} WHERE owner_key = ?)`,
+    `UPDATE ${T.savedIntents} SET owner_key = ? WHERE owner_key = ?`,
+    `DELETE FROM ${T.brandFollows} WHERE owner_key = ? AND brand_id IN
+       (SELECT brand_id FROM ${T.brandFollows} WHERE owner_key = ?)`,
+    `UPDATE ${T.brandFollows} SET owner_key = ? WHERE owner_key = ?`,
+    `UPDATE ${T.looks} SET owner_key = ? WHERE owner_key = ?`,
   ];
   await env.DB.batch([
-    env.DB.prepare(stmts[0]).bind(toKey, fromKey),
-    env.DB.prepare(stmts[1]).bind(fromKey),
-    env.DB.prepare(stmts[2]).bind(toKey, fromKey),
-    env.DB.prepare(stmts[3]).bind(fromKey),
-    env.DB.prepare(stmts[4]).bind(toKey, fromKey),
-    env.DB.prepare(stmts[5]).bind(fromKey),
+    env.DB.prepare(stmts[0]).bind(fromKey, toKey),
+    env.DB.prepare(stmts[1]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[2]).bind(fromKey, toKey),
+    env.DB.prepare(stmts[3]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[4]).bind(fromKey, toKey),
+    env.DB.prepare(stmts[5]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[6]).bind(fromKey, toKey),
+    env.DB.prepare(stmts[7]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[8]).bind(toKey, fromKey),
   ]);
 }

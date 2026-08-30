@@ -60,6 +60,76 @@ export interface SearchOptions {
   degradedHints?: string[];
 }
 
+interface ReferenceProfile {
+  text: string;
+  categories: string[];
+  materials: string[];
+  style_tags: string[];
+  colors: string[];
+}
+
+function mostFrequent(values: string[], limit: number): string[] {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, limit)
+    .map(([value]) => value);
+}
+
+/**
+ * Turn an indexed reference brand into a visual vocabulary for semantic recall.
+ * This is intentionally not a hard brand filter: “like X” should discover other
+ * labels, while an exact brand query continues to use ParsedQuery.brands.
+ */
+export async function resolveReferenceProfile(
+  env: Env,
+  names: string[],
+): Promise<ReferenceProfile | null> {
+  const wanted = [...new Set(names.map((name) => normaliseQuery(name)).filter(Boolean))].slice(0, 4);
+  if (!wanted.length) return null;
+  const slugs = wanted.map((name) => name.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''));
+  const brands = await env.DB.prepare(
+    `SELECT id, name, description, style_tags FROM ${T.brands}
+     WHERE status = 'active' AND (lower(name) IN (${inClause(wanted.length)}) OR slug IN (${inClause(slugs.length)}))
+     LIMIT 4`,
+  )
+    .bind(...wanted, ...slugs)
+    .all<{ id: string; name: string; description: string | null; style_tags: string }>();
+  const matched = brands.results ?? [];
+  if (!matched.length) return null;
+
+  const ids = matched.map((brand) => brand.id);
+  const products = await env.DB.prepare(
+    `SELECT category, materials, style_tags, colors, title FROM ${T.products}
+     WHERE brand_id IN (${inClause(ids.length)}) AND status = 'active'
+     ORDER BY popularity DESC, first_seen_at DESC LIMIT 80`,
+  )
+    .bind(...ids)
+    .all<{ category: string; materials: string; style_tags: string; colors: string; title: string }>();
+
+  const rows = products.results ?? [];
+  const categories = mostFrequent(rows.map((row) => row.category), 4);
+  const materials = mostFrequent(rows.flatMap((row) => safeJson<string[]>(row.materials, [])), 5);
+  const styleTags = mostFrequent(
+    [...matched.flatMap((brand) => safeJson<string[]>(brand.style_tags, [])), ...rows.flatMap((row) => safeJson<string[]>(row.style_tags, []))],
+    7,
+  );
+  const colors = mostFrequent(rows.flatMap((row) => safeJson<string[]>(row.colors, [])), 5);
+  const text = [
+    ...matched.map((brand) => `${brand.name}. ${brand.description ?? ''}`),
+    `signature categories ${categories.join(' ')}`,
+    `signature fabrics ${materials.join(' ')}`,
+    `signature aesthetic ${styleTags.join(' ')}`,
+    `signature colours ${colors.join(' ')}`,
+    ...rows.slice(0, 8).map((row) => row.title),
+  ]
+    .filter(Boolean)
+    .join('. ')
+    .slice(0, 1400);
+  return { text, categories, materials, style_tags: styleTags, colors };
+}
+
 /**
  * Parse a query, using the KV cache when possible (ADR-6: the parse is stable,
  * the results are not, so only the parse is cached long-term).
@@ -209,18 +279,37 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
 
   const parse = opts.parse ?? (await parseQueryCached(env, opts.query, onDegrade));
 
+  let recallParse = parse;
+  if (parse.like_brands.length) {
+    try {
+      const profile = await resolveReferenceProfile(env, parse.like_brands);
+      if (profile) {
+        recallParse = {
+          ...parse,
+          semantic_text: `${parse.semantic_text || opts.query}. Similar aesthetic: ${profile.text}`,
+          categories: parse.categories.length ? parse.categories : profile.categories.slice(0, 2),
+          materials: parse.materials.length ? parse.materials : profile.materials.slice(0, 3),
+          style_tags: parse.style_tags.length ? parse.style_tags : profile.style_tags.slice(0, 4),
+          colors: parse.colors,
+        };
+      }
+    } catch {
+      onDegrade('brand-reference-profile');
+    }
+  }
+
   // --- recall: three arms, in parallel -------------------------------------
   const [lexical, queryVec, structured] = await Promise.all([
-    lexicalSearch(env, parse, CANDIDATE_POOL).catch(() => {
+    lexicalSearch(env, recallParse, CANDIDATE_POOL).catch(() => {
       onDegrade('lexical');
       return [];
     }),
-    embedForActiveIndex(env, parse.semantic_text || opts.query, onDegrade).catch(() => {
+    embedForActiveIndex(env, recallParse.semantic_text || opts.query, onDegrade).catch(() => {
       onDegrade('embed');
       return null;
     }),
     structuredSearch(env, {
-      parse,
+      parse: recallParse,
       sort: sort === 'relevance' ? 'popular' : sort,
       limit: CANDIDATE_POOL,
       brandId: opts.brandId,

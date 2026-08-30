@@ -56,7 +56,7 @@ Honest critique, i.e. what I would attack if I were competing:
 | **Trust gap on the hop-out** | Sending a shopper to an unknown 40-SKU store is scary. Is it real? Will it ship? Return policy? | **Merchant trust score** surfaced inline: domain age, policy presence, ship-time, dispute rate. This is a durable moat and a data asset. |
 | **Freshness/accuracy of the long tail** | Small stores go out of stock and stale constantly. A dead link kills trust permanently. | Aggressive **liveness re-crawl** on click-hot SKUs + `last_verified_at` shown to user. Never rank an unverified-in-7-days item on page 1. |
 | **Zero retention loop** | Pure search = zero reason to return. Google is one tab away. | **Wardrobe + saved intents + price/restock alerts.** The alert is the retention primitive: it converts a search into an owned, recurring touchpoint. |
-| **Cold-start on taste** | The first query has no personalisation, so results feel generic. | **Reference opportunity, deferred in Vestiq's launch scope:** a visual taste-onboarding flow could later produce a bounded ranking preference. |
+| **Cold-start on taste** | The first query has no personalisation, so results feel generic. | Explicit `/taste` onboarding and followed brands produce a bounded ±8% tie-breaker without creating a filter bubble. |
 | **Commercial ranking erodes trust** | Paid placement makes relevance harder to believe, especially while the catalogue is young. | The launch is free for shoppers and brands, with no affiliate wrapping, subscriptions, campaign budgets, payouts, or promoted results. |
 | **No SEO harvest** | An AI search box is client-side and invisible to Google. Yet "co-ord set for goa vacation under 3000" is *exactly* a long-tail search query. | Every query result page is **server-rendered, indexable, JSON-LD marked up**, with programmatic collection pages. This is the cheapest acquisition channel that exists for this product. |
 
@@ -143,7 +143,7 @@ honest version ships; **Deferred** = not advertised as available.
 | U2 | **Occasion search** | Shipped | occasion lexicon + negation handling → `/search` |
 | U3 | **Constraint search** | Shipped | validated price/size/colour/material/brand filters enforced after recall → `/search` |
 | U4 | **Styling-problem search** | Shipped | `styling_problem` intent maps known garment categories to complementary categories → `/search` |
-| U5 | **Brand-reference search** | Partial | exact indexed-brand constraints work; “in the style of” brand cloning is deferred |
+| U5 | **Brand-reference search** | Shipped for indexed references | “Like X” resolves an indexed brand profile from its catalogue and uses that aesthetic for semantic/structured recall; unindexed references still depend on model knowledge |
 | U6 | **Image search** | Shipped | upload → vision-derived text query → shareable `/search?q=…` redirect |
 | U7 | **Refine without retyping** | Shipped | removable parse chips, facets, sorting and pagination preserve validated URL state |
 | U8 | **Explain the match** | Shipped | per-result `match_reasons[]` rendered as chips |
@@ -153,20 +153,20 @@ honest version ships; **Deferred** = not advertised as available.
 | # | Use case | Status | Launch implementation |
 | --- | --- | --- | --- |
 | U9 | Multi-turn consult ("packing 5 days Goa, ₹10k total") | Shipped | `/stylist` streams chat and inserts product-search grids |
-| U10 | Build a full look around one item | Deferred | No look-builder route or slot optimiser ships at launch |
-| U11 | Budget allocation across a look | Deferred | No multi-item budget optimiser ships at launch |
-| U12 | Save consult as a shoppable lookbook | Deferred | No `/looks/:id` route or shareable lookbook ships at launch |
+| U10 | Build a full look around one item | Shipped | `/look-builder?seed=…` derives complementary slots and keeps the selected item as the foundation |
+| U11 | Budget allocation across a look | Shipped | Candidate combinations are evaluated against one total budget rather than independent per-item caps |
+| U12 | Save consult as a shoppable lookbook | Shipped | Built looks persist as shareable `/looks/:id` pages and appear in the wardrobe |
 
 ### 4.3 Retention (the part the reference product is missing)
 
 | # | Use case | Status | Launch implementation |
 | --- | --- | --- | --- |
-| U13 | Wishlist / wardrobe | Shipped | `/wardrobe`, bound to the anonymous browser session; shopper sign-in and account-state merge are deferred |
+| U13 | Wishlist / wardrobe | Shipped | `/wardrobe` works anonymously; passwordless email sign-in merges saves, alerts, searches, follows and looks across devices |
 | U14 | **Price-drop alert** | Shipped | scheduled price comparison; anonymous shoppers provide an email when arming |
 | U15 | **Back-in-stock alert** | Shipped | scheduled availability comparison with the same alert delivery path |
-| U16 | **Saved intent** ("standing order") | Deferred in public UI | API/job substrate exists, but there is no launch control or email digest journey, so it is not advertised |
-| U17 | Taste onboarding | Deferred | a bounded taste-ranking helper and internal endpoint exist, but no shopper onboarding UI ships |
-| U18 | Daily drops feed | Partial | `/drops` is a generic newest-first catalogue; followed-brand and personalised drops are deferred |
+| U16 | **Saved intent** ("standing order") | Shipped | Search pages expose “Save this search”; the initial result set is baselined and only genuinely new matches produce a daily email; shoppers can stop it in `/wardrobe` |
+| U17 | Taste onboarding | Shipped | `/taste` captures like/avoid weights; ranking influence remains bounded to ±8% |
+| U18 | Daily drops feed | Shipped | `/drops` prioritises followed brands and uses bounded taste weights, falling back to newest-first for a cold session |
 
 ### 4.4 Trust (the moat)
 
@@ -184,7 +184,7 @@ honest version ships; **Deferred** = not advertised as available.
 | U23 | Brand self-onboard | `/merchant/signup` → feed URL (Shopify JSON / GMC / CSV) |
 | U24 | Feed health dashboard | `/merchant` — rows in/out, rejects with reasons |
 | U25 | Demand analytics | queries that matched them, queries that *nearly* matched (gap report) |
-| U26 | Free feed controls | update a feed URL or format and queue a sync; feed pause is deferred |
+| U26 | Free feed controls | update a feed URL or format, queue a sync, pause automatic syncing, or resume it |
 | U27 | Free catalogue insights | search demand and feed-quality reporting without a paid plan |
 
 ### 4.6 SEO / growth

@@ -1,12 +1,13 @@
 import type { Env } from '../types';
 import { T, getFlag } from '../lib/db';
-import { chunk, newId, safeJson } from '../lib/util';
+import { chunk, formatINR, newId, safeJson } from '../lib/util';
 import { makeLogger, type Logger } from '../lib/log';
 import { getAi } from '../ai/provider';
-import { activateIndex, buildIndex, quantise, type IndexEntry } from '../search/vector';
+import { activateIndex, buildIndex, deactivateIndex, quantise, type IndexEntry } from '../search/vector';
 import { fetchFeed, type FeedType } from '../ingest/adapters';
 import { upsertCatalog } from '../ingest/upsert';
 import { embedText } from '../ingest/normalize';
+import { sendEmail } from '../lib/email';
 
 /**
  * Cron-driven job queue (ADR-7).
@@ -219,6 +220,7 @@ export async function scheduleDueFeeds(env: Env, log: Logger): Promise<number> {
   const res = await env.DB.prepare(
     `SELECT id FROM ${T.merchants}
      WHERE status IN ('approved','pending') AND feed_url IS NOT NULL
+       AND feed_status != 'paused'
        AND (next_sync_at IS NULL OR next_sync_at <= ?)
      LIMIT 20`,
   )
@@ -373,7 +375,12 @@ async function rebuildVectorIndex(
 
   const totalCount = Number(total?.n ?? 0);
   const embeddedCount = Number(embedded?.n ?? 0);
-  if (!totalCount || !embeddedCount) return;
+  if (!totalCount) {
+    await deactivateIndex(env);
+    log.warn('vector index deactivated because the live catalogue is empty');
+    return;
+  }
+  if (!embeddedCount) return;
 
   const coverage = embeddedCount / totalCount;
 
@@ -586,25 +593,16 @@ interface AlertEmail {
  * successful notification; the caller leaves the alert armed for retry.
  */
 async function sendAlertEmail(env: Env, to: string, alert: AlertEmail): Promise<void> {
-  if (!env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is not configured');
-
   const rupees = (paise: number) => `₹${Math.round(paise / 100).toLocaleString('en-IN')}`;
   const subject =
     alert.kind === 'price_drop'
       ? `${alert.title} dropped to ${rupees(alert.price)}`
       : `${alert.title} is back in stock`;
 
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${env.RESEND_API_KEY}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'Vestiq <alerts@vestiq.in>',
-      to,
-      subject,
-      text: `${alert.brand} — ${alert.title}
+  await sendEmail(env, {
+    to,
+    subject,
+    text: `${alert.brand} — ${alert.title}
 
 ${
   alert.kind === 'price_drop'
@@ -614,10 +612,11 @@ ${
 
 ${alert.url}
 
-You set this alert on Vestiq. Prices change at the brand's site — check before buying.`,
-    }),
+You set this one-time alert on Vestiq. It will not email you again. Manage your alerts:
+${env.SITE_URL}/wardrobe
+
+Prices change at the brand's site — check before buying.`,
   });
-  if (!res.ok) throw new Error(`resend ${res.status}`);
 }
 
 // ---------------------------------------------------------------- saved intents
@@ -625,12 +624,12 @@ You set this alert on Vestiq. Prices change at the brand's site — check before
 /** Re-run standing searches and record how many new matches appeared (U16). */
 export async function runSavedIntents(env: Env, log: Logger): Promise<number> {
   const res = await env.DB.prepare(
-    `SELECT id, owner_key, query_raw, seen_ids FROM ${T.savedIntents}
+    `SELECT id, owner_key, query_raw, seen_ids, email FROM ${T.savedIntents}
      WHERE status = 'active' AND (last_run_at IS NULL OR last_run_at < ?)
      LIMIT 50`,
   )
     .bind(Date.now() - 20 * 3_600_000)
-    .all<{ id: string; owner_key: string; query_raw: string; seen_ids: string }>();
+    .all<{ id: string; owner_key: string; query_raw: string; seen_ids: string; email: string | null }>();
 
   const { search } = await import('../search');
   let processed = 0;
@@ -640,6 +639,18 @@ export async function runSavedIntents(env: Env, log: Logger): Promise<number> {
       const seen = new Set(safeJson<string[]>(intent.seen_ids, []));
       const results = await search(env, { query: intent.query_raw, perPage: 24 });
       const fresh = results.items.filter((i) => !seen.has(i.id));
+
+      if (fresh.length && intent.email) {
+        const lines = fresh.slice(0, 6).map(
+          (item) =>
+            `• ${item.brand_name} — ${item.title} — ${formatINR(item.price)}\n  ${env.SITE_URL}/p/${item.slug}-${item.id}`,
+        );
+        await sendEmail(env, {
+          to: intent.email,
+          subject: `${fresh.length} new match${fresh.length === 1 ? '' : 'es'} for “${intent.query_raw}”`,
+          text: `Vestiq found new pieces for your saved search:\n\n${intent.query_raw}\n\n${lines.join('\n\n')}\n\nSee all current matches:\n${env.SITE_URL}/search?q=${encodeURIComponent(intent.query_raw)}\n\nManage or stop this search:\n${env.SITE_URL}/wardrobe`,
+        });
+      }
 
       const nextSeen = [...results.items.map((i) => i.id), ...seen].slice(0, 200);
       await env.DB.prepare(
@@ -852,6 +863,15 @@ async function weeklyMaintenance(env: Env, log: Logger): Promise<void> {
     env.DB.prepare(`DELETE FROM ${T.priceHistory} WHERE ts < ?`).bind(
       Date.now() - 365 * 86_400_000,
     ),
+    env.DB.prepare(`DELETE FROM ${T.authTokens} WHERE expires_at < ? OR used_at IS NOT NULL`).bind(
+      Date.now() - 7 * 86_400_000,
+    ),
+    env.DB.prepare(
+      `DELETE FROM ${T.alerts} WHERE status IN ('fired','cancelled') AND created_at < ?`,
+    ).bind(Date.now() - 90 * 86_400_000),
+    env.DB.prepare(
+      `DELETE FROM ${T.savedIntents} WHERE status = 'cancelled' AND created_at < ?`,
+    ).bind(Date.now() - 90 * 86_400_000),
   ]);
   log.info('weekly maintenance done');
 }

@@ -17,7 +17,14 @@
 Verify at any time:
 ```bash
 curl -s https://vestiq.prakhargupta267.workers.dev/health | jq
+npm run check:launch   # strict readiness: inventory + email + scheduler + domain + AI
 ```
+
+`/health` measures hard runtime dependencies and returns 503 for catalogue
+contamination. `/ready` is deliberately stricter and remains 503 until the
+deployment has real inventory, email, a non-piggyback scheduler, a custom domain,
+and Gemini. Page uptime monitors should target `/health`; launch reviews and
+configuration monitors should track `/ready`.
 
 ---
 
@@ -117,8 +124,8 @@ and `CLOUDFLARE_ACCOUNT_ID` (see CI/CD below).
 
 `.github/workflows/ci.yml`:
 
-- **every push/PR** → typecheck (worker + client), 181 tests, client build,
-  performance budget;
+- **every push/PR** → typecheck (worker + client), 197 Vitest tests, 7
+  Playwright/Axe journeys, client build, performance budget;
 - **push to `main`** → migrations, deploy, then a **smoke test** that fails the
   deploy unless `/health` reports healthy and `/`, `/search` and `/robots.txt`
   serve real content.
@@ -156,8 +163,11 @@ proxy actually resize rather than pass through.
 
 The application intentionally starts without invented products. For real traffic:
 
-1. **Apply all migrations.** `0002_free_launch_cleanup.sql` removes any retired
-   sample inventory and disables every paid campaign or affiliate setting.
+1. **Apply all migrations.** `0002_free_launch_cleanup.sql` removes the original
+   marked sample inventory and paid settings. `0003_launch_integrity_and_retention.sql`
+   removes the later reserved-domain catalogue, recalculates counts, and creates
+   the account/follow/look tables. Runtime signup, feed, approval and health
+   guards prevent reserved destinations from returning.
 2. **Onboard real brands** at `/merchant/signup` — they paste a store URL; Shopify
    feeds are auto-derived. Approve them at `/admin/brands`.
 3. **Run `npm run embed`** so new products enter the semantic index.

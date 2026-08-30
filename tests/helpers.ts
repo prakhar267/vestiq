@@ -1,5 +1,6 @@
 import { env as rawEnv } from 'cloudflare:test';
 import initSql from '../migrations/0001_init.sql?raw';
+import launchSql from '../migrations/0003_launch_integrity_and_retention.sql?raw';
 import type { Env } from '../src/types';
 
 /**
@@ -74,7 +75,7 @@ let migrated = false;
 
 export async function migrate(): Promise<void> {
   if (migrated) return;
-  for (const statement of splitStatements(initSql)) {
+  for (const statement of splitStatements(`${initSql}\n${launchSql}`)) {
     await env.DB.prepare(statement).run();
   }
   migrated = true;
@@ -87,6 +88,10 @@ export async function resetData(): Promise<void> {
     'vestiq_saves',
     'vestiq_alerts',
     'vestiq_saved_intents',
+    'vestiq_brand_follows',
+    'vestiq_auth_tokens',
+    'vestiq_look_items',
+    'vestiq_looks',
     'vestiq_clicks',
     'vestiq_events',
     'vestiq_searches',
@@ -143,7 +148,7 @@ export async function seedBrand(
       id,
       slug,
       name,
-      `${slug}.example.in`,
+      `${slug}.fashion`,
       'Bengaluru',
       overrides.trust ?? 75,
       overrides.status ?? 'active',
@@ -162,9 +167,9 @@ export async function seedProduct(
   const id = opts.id ?? `p_test${counter}`;
   const title = opts.title ?? `Test Cotton Kurta ${counter}`;
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const brand = await env.DB.prepare(`SELECT name FROM vestiq_brands WHERE id = ?`)
+  const brand = await env.DB.prepare(`SELECT name, slug FROM vestiq_brands WHERE id = ?`)
     .bind(brandId)
-    .first<{ name: string }>();
+    .first<{ name: string; slug: string }>();
 
   const colors = opts.colors ?? ['blue'];
   const materials = opts.materials ?? ['cotton'];
@@ -192,7 +197,7 @@ export async function seedProduct(
       opts.gender ?? 'women',
       opts.price ?? 199_900,
       opts.mrp === undefined ? 299_900 : opts.mrp,
-      `https://example.in/products/${slug}`,
+      `https://${brand?.slug ?? 'brand'}.fashion/products/${slug}`,
       imageUrl,
       JSON.stringify([imageUrl]),
       JSON.stringify(colors),

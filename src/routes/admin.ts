@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppContext, Env } from '../types';
 import { T, audit, getFlag, setFlag } from '../lib/db';
-import { esc, safeEqual, timeAgo, truncate } from '../lib/util';
+import { esc, isPlaceholderHostname, safeEqual, timeAgo, truncate } from '../lib/util';
 import { layout } from '../ui/layout';
 import { sectionHead } from '../ui/components';
 
@@ -215,6 +215,7 @@ adminRoutes.get('/admin/brands', async (c) => {
       c,
       'Brands',
       `<h1>Brands</h1>
+      ${c.req.query('error') ? `<div class="notice bad">${esc(c.req.query('error'))}</div>` : ''}
       <div class="table-wrap"><table>
         <thead><tr><th>Brand</th><th>Status</th><th class="num">Trust</th><th class="num">SKUs</th>
           <th>Feed</th><th>Synced</th><th>Action</th></tr></thead>
@@ -254,6 +255,23 @@ adminRoutes.post('/admin/brands/:id/status', async (c) => {
   const form = await c.req.formData();
   const status = String(form.get('status') ?? '');
   if (!['active', 'pending', 'suspended'].includes(status)) return c.text('bad status', 400);
+
+  if (status === 'active') {
+    const brand = await c.env.DB.prepare(
+      `SELECT b.domain, COUNT(CASE WHEN p.status = 'active' THEN 1 END) AS products
+       FROM ${T.brands} b LEFT JOIN ${T.products} p ON p.brand_id = b.id
+       WHERE b.id = ? GROUP BY b.id`,
+    )
+      .bind(id)
+      .first<{ domain: string | null; products: number }>();
+    if (!brand) return c.notFound();
+    if (isPlaceholderHostname(brand.domain)) {
+      return c.redirect('/admin/brands?error=Reserved+or+placeholder+merchant+domains+cannot+be+approved', 303);
+    }
+    if (Number(brand.products ?? 0) < 1) {
+      return c.redirect('/admin/brands?error=Sync+at+least+one+valid+product+before+approval', 303);
+    }
+  }
 
   const merchantStatus = status === 'active' ? 'approved' : status;
   // D1 batches execute transactionally, so shopper visibility and feed access

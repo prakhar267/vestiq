@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext, Env } from './types';
 import { T } from './lib/db';
 import { isBotUA, newId } from './lib/util';
+import { catalogueReadiness, configurationReadiness } from './lib/readiness';
 import { makeLogger } from './lib/log';
 import { resolveSession, saveSession } from './lib/session';
 import { securityHeaders } from './ui/layout';
@@ -98,6 +99,28 @@ app.get('/health', async (c) => {
     timed('kv_vectors', () => c.env.VECTORS.get('vec:active'), false),
   ]);
 
+  try {
+    const catalogue = await catalogueReadiness(c.env);
+    const clean = catalogue.placeholder_brands === 0 && catalogue.placeholder_products === 0;
+    checks.catalogue_integrity = {
+      ok: clean,
+      note: clean
+        ? `${catalogue.active_brands} active brands · ${catalogue.active_products} active products`
+        : `${catalogue.placeholder_brands} placeholder brands · ${catalogue.placeholder_products} placeholder products`,
+    };
+    checks.catalogue_ready = {
+      ok: catalogue.active_brands > 0 && catalogue.active_products > 0 && clean,
+      note:
+        catalogue.active_brands > 0 && catalogue.active_products > 0 && clean
+          ? 'real live inventory present'
+          : 'onboard and approve real inventory before launch',
+    };
+    if (!clean) hardFailure = true;
+  } catch (err) {
+    checks.catalogue_integrity = { ok: false, note: String(err).slice(0, 120) };
+    hardFailure = true;
+  }
+
   checks.ai = {
     ok: Boolean(c.env.AI) || Boolean(c.env.GEMINI_API_KEY),
     note: c.env.GEMINI_API_KEY
@@ -107,6 +130,7 @@ app.get('/health', async (c) => {
         : 'heuristic only (degraded)',
   };
   checks.admin_configured = { ok: Boolean(c.env.ADMIN_TOKEN) };
+  Object.assign(checks, configurationReadiness(c.env));
 
   return c.json(
     {
@@ -117,6 +141,37 @@ app.get('/health', async (c) => {
       checks,
     },
     hardFailure ? 503 : 200,
+    { 'cache-control': 'no-store' },
+  );
+});
+
+/**
+ * Readiness is deliberately stricter than health. A healthy prelaunch Worker
+ * may still lack real inventory, outbound email, a native scheduler, or a custom
+ * domain. Monitors page on /health and track /ready as a launch checklist.
+ */
+app.get('/ready', async (c) => {
+  const catalogue = await catalogueReadiness(c.env);
+  const configuration = configurationReadiness(c.env);
+  const checks = {
+    catalogue_integrity: {
+      ok: catalogue.placeholder_brands === 0 && catalogue.placeholder_products === 0,
+      note: `${catalogue.placeholder_brands} placeholder brands · ${catalogue.placeholder_products} placeholder products`,
+    },
+    real_inventory: {
+      ok: catalogue.active_brands > 0 && catalogue.active_products > 0,
+      note: `${catalogue.active_brands} active brands · ${catalogue.active_products} active products`,
+    },
+    admin_configured: {
+      ok: Boolean(c.env.ADMIN_TOKEN),
+      note: c.env.ADMIN_TOKEN ? 'configured' : 'missing',
+    },
+    ...configuration,
+  };
+  const ready = Object.values(checks).every((check) => check.ok);
+  return c.json(
+    { status: ready ? 'ready' : 'not_ready', time: new Date().toISOString(), checks },
+    ready ? 200 : 503,
     { 'cache-control': 'no-store' },
   );
 });

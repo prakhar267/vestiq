@@ -53,11 +53,10 @@ binding = "AI"
 # See handleScheduled() in src/jobs/index.ts.
 # DISABLED: this account has already used all 5 free-plan cron slots on other
 # Workers, so registering one here fails the deploy. Scheduled work therefore runs
-# via POST /admin/jobs/tick, driven by .github/workflows/scheduler.yml — the exact
-# same code path as the cron handler.
+# via traffic-driven piggybacking plus the manual POST /admin/jobs/tick endpoint.
 #
 # To switch back to a native cron trigger: free a slot (or upgrade to Workers
-# Paid), uncomment the two lines below, redeploy, and disable the GitHub workflow.
+# Paid), uncomment the two lines below, redeploy, and disable piggybacking.
 # [triggers]
 # crons = ["*/15 * * * *"]
 

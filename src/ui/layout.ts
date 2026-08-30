@@ -61,6 +61,7 @@ const NAV = [
   { href: '/drops', label: 'New in', key: 'drops' as const, desktopOnly: true },
   { href: '/brands', label: 'Brands', key: 'brands' as const, desktopOnly: true },
   { href: '/wardrobe', label: 'Saved', key: 'wardrobe' as const, desktopOnly: false },
+  { href: '/account', label: 'Account', key: undefined, desktopOnly: true },
 ];
 
 function header(opts: LayoutOptions): string {
@@ -134,6 +135,7 @@ function footer(env: Env): string {
           <li><a href="/about">About</a></li>
           <li><a href="/privacy">Privacy</a></li>
           <li><a href="/terms">Terms</a></li>
+          <li><a href="/account">Account</a></li>
         </ul>
       </div>
     </div>

@@ -154,6 +154,12 @@ export async function activateIndex(env: Env, version: number): Promise<void> {
   cache = null;
 }
 
+/** Remove the active pointer when no live products remain after catalogue cleanup. */
+export async function deactivateIndex(env: Env): Promise<void> {
+  await env.VECTORS.delete(ACTIVE_KEY);
+  cache = null;
+}
+
 export async function getActiveVersion(env: Env): Promise<number | null> {
   const raw = await env.VECTORS.get(ACTIVE_KEY);
   if (!raw) return null;

@@ -104,10 +104,43 @@ test('shopper can search, filter, sort, save, inspect, and remove a piece', asyn
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Your wardrobe');
   await expect(page.getByRole('heading', { name: 'Alerts' })).toBeVisible();
   await expect(page.locator('table')).toContainText('Linen Coast Co-ord Set');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.locator('table')).toContainText('cancelled');
   const remove = page.getByRole('button', { name: /Remove from saved Linen Coast Co-ord Set/ });
   await remove.click();
   await expect(page.locator('.card')).toHaveCount(0);
   await expect(page.locator('body')).not.toContainText('Add your email');
+  await expectNoBlockingA11y(page);
+});
+
+test('shopper can save a standing search, tune taste, follow a brand, and build a shareable look', async ({ page }) => {
+  await page.goto('/search?q=dress%20or%20co-ord%20set');
+  await page.getByRole('link', { name: 'Save this search' }).click();
+  await page.getByLabel('Email address').fill('standing-search@example.test');
+  await page.getByRole('button', { name: 'Save search' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Your wardrobe');
+  await expect(page.locator('table')).toContainText('dress or co-ord set');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await expect(page.locator('body')).not.toContainText('dress or co-ord set');
+
+  await page.goto('/brand/qa-kora');
+  await page.getByRole('button', { name: 'Follow this brand' }).click();
+  await expect(page.getByRole('button', { name: /Following/ })).toBeVisible();
+
+  await page.goto('/taste');
+  await page.locator('input[name="taste:minimal"][value="1"]').check();
+  await page.getByRole('button', { name: 'Save preferences' }).click();
+  await expect(page).toHaveURL(/\/drops\?taste=saved/);
+  await expect(page.locator('body')).toContainText('Personalised with followed brands');
+
+  await page.goto('/look-builder');
+  await page.getByLabel('Occasion, mood and constraints').fill('wedding guest dress');
+  await page.getByLabel('Total budget in ₹').fill('10000');
+  await page.getByRole('button', { name: 'Build my look' }).click();
+  await expect(page).toHaveURL(/\/looks\/lk_/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Look for wedding guest dress');
+  await expect(page.locator('.look-grid .card')).toHaveCount(3);
+  await expect(page.locator('body')).toContainText('₹6,997');
   await expectNoBlockingA11y(page);
 });
 
@@ -185,7 +218,7 @@ test('merchant onboarding is free and pending inventory remains private', async 
   await expectNoBlockingA11y(page);
 
   await page.getByLabel('Brand name').fill(brandName);
-  await page.getByLabel('Store URL').fill(`https://browser-journey-${suffix}.example`);
+  await page.getByLabel('Store URL').fill(`https://browser-journey-${suffix}.fashion`);
   await page.getByLabel('Your email').fill(`browser-journey-${suffix}@example.test`);
   await page.getByLabel('Your name').fill('QA Owner');
   await page.getByLabel('City').fill('Pune');
@@ -263,7 +296,7 @@ test('free-launch routes are organic, direct, and contain no demo renderer', asy
   const hop = await page.request.get('/go/pqa1?promoted=1', { maxRedirects: 0 });
   expect(hop.status()).toBe(302);
   expect(hop.headers().location).toBe(
-    'https://qa-kora.example/products/linen-coast-co-ord-set',
+    'https://qa-kora.fashion/products/linen-coast-co-ord-set',
   );
 
   await page.goto('/');

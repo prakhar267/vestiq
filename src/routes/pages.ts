@@ -1,14 +1,17 @@
 import { Hono } from 'hono';
 import type { AppContext, Brand, Env, ParsedQuery, ResultItem, SortKey } from '../types';
 import { PRODUCT_COLUMNS, T, inClause, rowToBrand, rowToProduct } from '../lib/db';
-import { esc, formatINR, normaliseQuery, safeJson, sha256Hex, timeAgo, truncate } from '../lib/util';
-import { ownerKey } from '../lib/session';
+import { esc, formatINR, newId, normaliseQuery, safeJson, sha256Hex, timeAgo, truncate } from '../lib/util';
+import { mergeOwner, ownerKey, saveSession } from '../lib/session';
+import { sendEmail } from '../lib/email';
+import { rateIdentity, rateLimit } from '../lib/ratelimit';
 import {
   ALL_CATEGORIES,
   ALL_COLORS,
   ALL_MATERIALS,
   ALL_OCCASIONS,
   ALL_STYLES,
+  COMPLEMENTS,
   label,
 } from '../ai/lexicon';
 import { heuristicParse } from '../ai/heuristic';
@@ -501,6 +504,9 @@ ${parseChips(response.parse, query)}
         ${response.total.toLocaleString('en-IN')}${response.capped ? '+' : ''} ${response.total === 1 ? 'piece' : 'pieces'}
         ${response.degraded.length ? ' · <span class="badge warn">smart search degraded</span>' : ''}
       </p>
+      <p style="margin-top:var(--s3)">
+        <a class="btn btn-sm" href="/save-search?q=${encodeURIComponent(query)}">Save this search</a>
+      </p>
     </div>
     ${sortSelect(sort, query, params)}
   </div>
@@ -590,15 +596,22 @@ pageRoutes.get('/p/:handle', async (c) => {
   const canonicalHandle = `${product.slug}-${product.id}`;
   if (handle !== canonicalHandle) return c.redirect(`/p/${canonicalHandle}`, 301);
 
-  const [similar, priceHistory, saved] = await Promise.all([
+  const [similar, priceHistory, saved, armedAlerts] = await Promise.all([
     similarProducts(env, product, 10),
     priceHistoryFor(env, product.id),
     savedIds(env, ownerKey(app.session), [product.id]),
+    env.DB.prepare(
+      `SELECT kind FROM ${T.alerts} WHERE owner_key = ? AND product_id = ? AND status = 'armed'`,
+    )
+      .bind(ownerKey(app.session), product.id)
+      .all<{ kind: string }>(),
   ]);
 
   const images = product.images.length ? product.images : product.image_url ? [product.image_url] : [];
   const off = product.mrp && product.mrp > product.price;
   const inStock = product.availability !== 'out_of_stock';
+  const alertKind = inStock ? 'price_drop' : 'back_in_stock';
+  const alertArmed = (armedAlerts.results ?? []).some((alert) => alert.kind === alertKind);
 
   const jsonLd = [
     {
@@ -714,9 +727,10 @@ pageRoutes.get('/p/:handle', async (c) => {
           ${ICONS.heart} <span>${saved.has(product.id) ? 'Saved' : 'Save'}</span>
         </button>
         <button class="btn btn-sm" type="button" data-alert="${esc(product.id)}"
-          data-kind="${inStock ? 'price_drop' : 'back_in_stock'}" aria-pressed="false">
-          ${ICONS.bell} <span>${inStock ? 'Alert on price drop' : 'Tell me when it’s back'}</span>
+          data-kind="${alertKind}" aria-pressed="${alertArmed ? 'true' : 'false'}">
+          ${ICONS.bell} <span>${alertArmed ? 'Alert set' : inStock ? 'Alert on price drop' : 'Tell me when it’s back'}</span>
         </button>
+        <a class="btn btn-sm" href="/look-builder?seed=${encodeURIComponent(product.id)}">Build a look</a>
       </div>
 
       ${
@@ -840,6 +854,12 @@ pageRoutes.get('/brand/:slug', async (c) => {
   if (!row) return c.notFound();
   const brand = rowToBrand(row);
 
+  const followed = await env.DB.prepare(
+    `SELECT 1 AS ok FROM ${T.brandFollows} WHERE owner_key = ? AND brand_id = ?`,
+  )
+    .bind(ownerKey(app.session), brand.id)
+    .first<{ ok: number }>();
+
   const response = await search(env, {
     query: brand.name,
     parse: { ...heuristicParse(''), semantic_text: '', confidence: 0.2 },
@@ -890,6 +910,10 @@ pageRoutes.get('/brand/:slug', async (c) => {
             ${brand.return_days ? `<li class="chip">${brand.return_days}d returns</li>` : ''}
             <li class="chip">${brand.product_count} pieces</li>
           </ul>
+          <form method="POST" action="/brand/${esc(brand.slug)}/follow" style="margin-top:var(--s4)">
+            <input type="hidden" name="action" value="${followed ? 'unfollow' : 'follow'}">
+            <button class="btn btn-sm" type="submit">${followed ? 'Following · Unfollow' : 'Follow this brand'}</button>
+          </form>
         </section>
         ${
           response.items.length
@@ -900,6 +924,29 @@ pageRoutes.get('/brand/:slug', async (c) => {
       </div>`,
     ),
   );
+});
+
+pageRoutes.post('/brand/:slug/follow', async (c) => {
+  const slug = c.req.param('slug');
+  const brand = await c.env.DB.prepare(`SELECT id FROM ${T.brands} WHERE slug = ? AND status = 'active'`)
+    .bind(slug)
+    .first<{ id: string }>();
+  if (!brand) return c.notFound();
+  const form = await c.req.formData();
+  const action = String(form.get('action') ?? 'follow');
+  const owner = ownerKey(c.var.app.session);
+  if (action === 'unfollow') {
+    await c.env.DB.prepare(`DELETE FROM ${T.brandFollows} WHERE owner_key = ? AND brand_id = ?`)
+      .bind(owner, brand.id)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO ${T.brandFollows} (id, owner_key, brand_id, created_at) VALUES (?,?,?,?)`,
+    )
+      .bind(newId('bf'), owner, brand.id, Date.now())
+      .run();
+  }
+  return c.redirect(`/brand/${encodeURIComponent(slug)}`, 303);
 });
 
 // ============================================================ collections
@@ -1021,7 +1068,13 @@ pageRoutes.get('/c/:slug', async (c) => {
 pageRoutes.get('/drops', async (c) => {
   const { app } = c.var;
   const env = c.env;
-  const items = await latestProducts(env, 48);
+  const follows = await env.DB.prepare(
+    `SELECT brand_id FROM ${T.brandFollows} WHERE owner_key = ? ORDER BY created_at DESC LIMIT 50`,
+  )
+    .bind(ownerKey(app.session))
+    .all<{ brand_id: string }>();
+  const followedBrandIds = (follows.results ?? []).map((row) => row.brand_id);
+  const items = await latestProducts(env, 48, followedBrandIds, app.session);
   const saved = await savedIds(env, ownerKey(app.session), items.map((i) => i.id));
 
   return c.html(
@@ -1038,7 +1091,11 @@ pageRoutes.get('/drops', async (c) => {
       },
       `<div class="wrap"><section class="section">
         <h1>New in</h1>
-        <p class="muted" style="margin:var(--s3) 0 var(--s6)">Freshest pieces we've indexed, newest first.</p>
+        <p class="muted" style="margin:var(--s3) 0 var(--s6)">${
+          followedBrandIds.length || app.session.taste
+            ? 'Personalised with followed brands and your taste preferences.'
+            : `Freshest pieces we've indexed. <a href="/taste">Set your taste</a> or follow brands to personalise this feed.`
+        }</p>
         ${items.length ? productGrid(items, { savedIds: saved, now: Date.now() }) : '<p class="muted">Nothing new yet.</p>'}
       </section></div>`,
     ),
@@ -1077,7 +1134,8 @@ pageRoutes.get('/wardrobe', async (c) => {
   }));
 
   const alertsRes = await env.DB.prepare(
-    `SELECT a.id, a.kind, a.target_price, a.base_price, a.status, p.title, p.slug, p.price, b.name AS brand_name
+    `SELECT a.id, a.kind, a.target_price, a.base_price, a.status, p.id AS product_id,
+            p.title, p.slug, p.price, b.name AS brand_name
      FROM ${T.alerts} a
      JOIN ${T.products} p ON p.id = a.product_id
      JOIN ${T.brands} b ON b.id = p.brand_id
@@ -1095,6 +1153,20 @@ pageRoutes.get('/wardrobe', async (c) => {
 
   const alerts = alertsRes.results ?? [];
   const intents = intentsRes.results ?? [];
+  const followsRes = await env.DB.prepare(
+    `SELECT b.name, b.slug FROM ${T.brandFollows} f JOIN ${T.brands} b ON b.id = f.brand_id
+     WHERE f.owner_key = ? AND b.status = 'active' ORDER BY f.created_at DESC LIMIT 50`,
+  )
+    .bind(owner)
+    .all<{ name: string; slug: string }>();
+  const followedBrands = followsRes.results ?? [];
+  const looksRes = await env.DB.prepare(
+    `SELECT id, title, total_price, created_at FROM ${T.looks}
+     WHERE owner_key = ? AND status = 'active' ORDER BY created_at DESC LIMIT 30`,
+  )
+    .bind(owner)
+    .all<{ id: string; title: string; total_price: number; created_at: number }>();
+  const looks = looksRes.results ?? [];
 
   return c.html(
     layout(
@@ -1112,6 +1184,7 @@ pageRoutes.get('/wardrobe', async (c) => {
       `<div class="wrap">
         <section class="section">
           <h1>Your wardrobe</h1>
+          <p style="margin-top:var(--s3)"><a class="btn btn-sm" href="/taste">Tune your taste</a> <a class="btn btn-sm" href="/account">Cross-device account</a></p>
           ${
             app.session.user_id
               ? ''
@@ -1140,10 +1213,16 @@ pageRoutes.get('/wardrobe', async (c) => {
                 <tbody>${alerts
                   .map(
                     (a) => `<tr>
-                      <td>${esc(truncate(String(a.title), 40))} <span class="tiny">${esc(String(a.brand_name))}</span></td>
+                      <td><a href="/p/${esc(String(a.slug))}-${esc(String(a.product_id ?? ''))}">${esc(truncate(String(a.title), 40))}</a> <span class="tiny">${esc(String(a.brand_name))}</span></td>
                       <td>${a.kind === 'price_drop' ? 'Price drop' : 'Back in stock'}</td>
                       <td class="num">${esc(formatINR(Number(a.base_price)))}</td>
-                      <td><span class="badge ${a.status === 'fired' ? 'good' : ''}">${esc(String(a.status))}</span></td>
+                      <td><span class="badge ${a.status === 'fired' ? 'good' : ''}">${esc(String(a.status))}</span>
+                        ${
+                          a.status === 'armed'
+                            ? `<form method="POST" action="/wardrobe/alerts/${esc(String(a.id))}/cancel" style="display:inline;margin-left:var(--s2)"><button class="btn btn-sm" type="submit">Cancel</button></form>`
+                            : ''
+                        }
+                      </td>
                     </tr>`,
                   )
                   .join('')}</tbody>
@@ -1157,18 +1236,141 @@ pageRoutes.get('/wardrobe', async (c) => {
             ? `<section class="section">
               ${sectionHead('Standing searches')}
               <p class="tiny" style="margin-bottom:var(--s4)">We re-run these nightly and tell you what's new.</p>
-              ${chipLinks(
-                intents.map((i) => ({
-                  label: `${i.query_raw} (${i.last_count})`,
-                  href: `/search?q=${encodeURIComponent(i.query_raw)}`,
-                })),
-              )}
+              <div class="table-wrap"><table>
+                <thead><tr><th>Search</th><th class="num">New</th><th>Last checked</th><th></th></tr></thead>
+                <tbody>${intents
+                  .map(
+                    (i) => `<tr><td><a href="/search?q=${encodeURIComponent(i.query_raw)}">${esc(truncate(i.query_raw, 70))}</a></td>
+                      <td class="num">${i.last_count}</td><td>${esc(timeAgo(i.last_run_at))}</td>
+                      <td><form method="POST" action="/wardrobe/intents/${esc(i.id)}/cancel"><button class="btn btn-sm" type="submit">Stop</button></form></td></tr>`,
+                  )
+                  .join('')}</tbody>
+              </table></div>
             </section>`
+            : ''
+        }
+        ${
+          followedBrands.length
+            ? `<section class="section">${sectionHead('Followed brands')}${chipLinks(
+                followedBrands.map((brand) => ({ label: brand.name, href: `/brand/${brand.slug}` })),
+              )}</section>`
+            : ''
+        }
+        ${
+          looks.length
+            ? `<section class="section">${sectionHead('Saved looks')}
+                <div class="table-wrap"><table><thead><tr><th>Look</th><th class="num">Total</th><th>Created</th><th></th></tr></thead>
+                <tbody>${looks
+                  .map(
+                    (look) => `<tr><td><a href="/looks/${esc(look.id)}">${esc(truncate(look.title, 60))}</a></td>
+                      <td class="num">${esc(formatINR(look.total_price))}</td><td>${esc(timeAgo(look.created_at))}</td>
+                      <td><form method="POST" action="/wardrobe/looks/${esc(look.id)}/remove"><button class="btn btn-sm" type="submit">Remove</button></form></td></tr>`,
+                  )
+                  .join('')}</tbody></table></div></section>`
             : ''
         }
       </div>`,
     ),
   );
+});
+
+pageRoutes.post('/wardrobe/alerts/:id/cancel', async (c) => {
+  await c.env.DB.prepare(
+    `UPDATE ${T.alerts} SET status = 'cancelled'
+     WHERE id = ? AND owner_key = ? AND status = 'armed'`,
+  )
+    .bind(c.req.param('id'), ownerKey(c.var.app.session))
+    .run();
+  return c.redirect('/wardrobe', 303);
+});
+
+pageRoutes.post('/wardrobe/intents/:id/cancel', async (c) => {
+  await c.env.DB.prepare(
+    `UPDATE ${T.savedIntents} SET status = 'cancelled' WHERE id = ? AND owner_key = ?`,
+  )
+    .bind(c.req.param('id'), ownerKey(c.var.app.session))
+    .run();
+  return c.redirect('/wardrobe', 303);
+});
+
+pageRoutes.post('/wardrobe/looks/:id/remove', async (c) => {
+  const id = c.req.param('id');
+  const owner = ownerKey(c.var.app.session);
+  const owned = await c.env.DB.prepare(`SELECT id FROM ${T.looks} WHERE id = ? AND owner_key = ?`)
+    .bind(id, owner)
+    .first<{ id: string }>();
+  if (owned) {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`DELETE FROM ${T.lookItems} WHERE look_id = ?`).bind(id),
+      c.env.DB.prepare(`UPDATE ${T.looks} SET status = 'removed' WHERE id = ?`).bind(id),
+    ]);
+  }
+  return c.redirect('/wardrobe', 303);
+});
+
+pageRoutes.get('/save-search', async (c) => {
+  const query = (c.req.query('q') ?? '').trim().slice(0, 300);
+  if (query.length < 3) return c.redirect('/search', 302);
+  const user = c.var.app.session.user_id
+    ? await c.env.DB.prepare(`SELECT email FROM ${T.users} WHERE id = ?`)
+        .bind(c.var.app.session.user_id)
+        .first<{ email: string | null }>()
+    : null;
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Save search — ${c.env.SITE_NAME}`,
+        description: 'Get an email when new pieces match this search.',
+        path: `/save-search?q=${encodeURIComponent(query)}`,
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap-narrow"><section class="section">
+        <p class="eyebrow">Standing search</p><h1>Save this search</h1>
+        <div class="notice" style="margin-top:var(--s4)">${esc(query)}</div>
+        <p class="muted">We’ll check daily and email only when genuinely new pieces appear.</p>
+        <form method="POST" action="/save-search" style="margin-top:var(--s5)">
+          <input type="hidden" name="query" value="${esc(query)}">
+          <label class="field"><span>Email address</span>
+            <input type="email" name="email" value="${esc(user?.email ?? '')}" required autocomplete="email"></label>
+          <button class="btn btn-primary" type="submit">Save search</button>
+        </form>
+      </section></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/save-search', async (c) => {
+  const limited = await rateLimit(c.env, 'write', rateIdentity(c.req.raw, c.var.app.session.id));
+  if (!limited.ok) return c.text('Too many requests. Try again later.', 429);
+  const form = await c.req.formData();
+  const query = String(form.get('query') ?? '').trim().slice(0, 300);
+  const email = String(form.get('email') ?? '').trim().toLowerCase().slice(0, 200);
+  if (query.length < 3 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return c.text('Check the search and email address.', 400);
+  }
+  const initial = await search(c.env, { query, perPage: 24, session: c.var.app.session });
+  await c.env.DB.prepare(
+    `INSERT INTO ${T.savedIntents}
+      (id, owner_key, query_raw, parse, email, seen_ids, last_run_at, status, created_at)
+     VALUES (?,?,?,?,?,?,?, 'active', ?)
+     ON CONFLICT(owner_key, query_raw) DO UPDATE SET status = 'active', email = excluded.email,
+       parse = excluded.parse, seen_ids = excluded.seen_ids, last_run_at = excluded.last_run_at`,
+  )
+    .bind(
+      newId('si'),
+      ownerKey(c.var.app.session),
+      query,
+      JSON.stringify(initial.parse),
+      email,
+      JSON.stringify(initial.items.map((item) => item.id)),
+      Date.now(),
+      Date.now(),
+    )
+    .run();
+  return c.redirect('/wardrobe?saved_search=1', 303);
 });
 
 // ============================================================ stylist
@@ -1204,6 +1406,7 @@ pageRoutes.get('/stylist', async (c) => {
             Tell me the occasion, your budget, and what you already own. I'll put
             real outfits together from brands we index.
           </p>
+          <p style="margin-top:var(--s3)"><a class="btn btn-sm" href="/look-builder">Build a budgeted, shareable look</a></p>
         </section>
 
         <div id="thread" aria-live="polite"></div>
@@ -1238,6 +1441,348 @@ pageRoutes.get('/stylist', async (c) => {
       </div>`,
     ),
   );
+});
+
+// ============================================================ full-look builder
+
+pageRoutes.get('/look-builder', async (c) => {
+  const seedId = (c.req.query('seed') ?? '').slice(0, 40);
+  const seed = seedId
+    ? await c.env.DB.prepare(
+        `SELECT p.title, b.name AS brand_name FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
+         WHERE p.id = ? AND p.status = 'active' AND b.status = 'active'`,
+      )
+        .bind(seedId)
+        .first<{ title: string; brand_name: string }>()
+    : null;
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Look builder — ${c.env.SITE_NAME}`,
+        description: 'Build a complete outfit within one total budget.',
+        path: `/look-builder${seedId ? `?seed=${encodeURIComponent(seedId)}` : ''}`,
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap-narrow"><section class="section">
+        <p class="eyebrow">Stylist tool</p><h1>Build a complete look</h1>
+        <p class="muted">We search each outfit slot, then optimise the combination against your total budget. The result is saved as a shareable page.</p>
+        ${seed ? `<div class="notice">Building around <strong>${esc(seed.title)}</strong> by ${esc(seed.brand_name)}.</div>` : ''}
+        <form method="POST" action="/look-builder" style="margin-top:var(--s5)">
+          ${seedId ? `<input type="hidden" name="seed" value="${esc(seedId)}">` : ''}
+          <label class="field"><span>Occasion, mood and constraints</span>
+            <textarea name="prompt" required maxlength="300" placeholder="Outdoor mehendi, breathable, not too traditional">${esc(c.req.query('q') ?? '')}</textarea></label>
+          <label class="field"><span>Total budget in ₹</span>
+            <input type="number" name="budget" min="500" max="1000000" step="100" value="10000" required></label>
+          <button class="btn btn-primary" type="submit">Build my look</button>
+        </form>
+      </section></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/look-builder', async (c) => {
+  const limited = await rateLimit(c.env, 'stylist', rateIdentity(c.req.raw, c.var.app.session.id));
+  if (!limited.ok) return c.text('Too many look requests. Try again later.', 429);
+  const form = await c.req.formData();
+  const prompt = String(form.get('prompt') ?? '').trim().slice(0, 300);
+  const seedId = String(form.get('seed') ?? '').slice(0, 40);
+  const budgetRupees = Number(form.get('budget'));
+  if (prompt.length < 3 || !Number.isFinite(budgetRupees) || budgetRupees < 500 || budgetRupees > 1_000_000) {
+    return c.text('Check the prompt and budget.', 400);
+  }
+
+  const built = await buildBudgetedLook(c.env, prompt, Math.round(budgetRupees * 100), c.var.app.session, seedId || undefined);
+  if (!built.items.length) {
+    return c.html(
+      layout(
+        {
+          env: c.env,
+          title: `No complete look — ${c.env.SITE_NAME}`,
+          description: 'No products fit the requested look.',
+          path: '/look-builder',
+          nonce: c.var.app.nonce,
+          noindex: true,
+        },
+        `<div class="wrap-narrow"><section class="section"><h1>We couldn’t build that look yet.</h1><p class="muted">The catalogue does not have enough matching pieces inside ${esc(formatINR(Math.round(budgetRupees * 100)))}. Try a wider description or budget.</p><p><a class="btn" href="/look-builder">Try again</a></p></section></div>`,
+      ),
+      422,
+    );
+  }
+
+  const lookId = newId('lk');
+  const title = truncate(`Look for ${prompt}`, 100);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO ${T.looks} (id, owner_key, title, prompt, budget, total_price, created_at) VALUES (?,?,?,?,?,?,?)`,
+    ).bind(lookId, ownerKey(c.var.app.session), title, prompt, Math.round(budgetRupees * 100), built.total, Date.now()),
+    ...built.items.map((selection, index) =>
+      c.env.DB.prepare(
+        `INSERT INTO ${T.lookItems} (look_id, product_id, slot, position) VALUES (?,?,?,?)`,
+      ).bind(lookId, selection.item.id, selection.slot, index),
+    ),
+  ]);
+  return c.redirect(`/looks/${lookId}`, 303);
+});
+
+pageRoutes.get('/looks/:id', async (c) => {
+  const id = c.req.param('id');
+  const look = await c.env.DB.prepare(
+    `SELECT id, title, prompt, budget, total_price, created_at FROM ${T.looks} WHERE id = ? AND status = 'active'`,
+  )
+    .bind(id)
+    .first<{ id: string; title: string; prompt: string; budget: number | null; total_price: number; created_at: number }>();
+  if (!look) return c.notFound();
+  const rows = await c.env.DB.prepare(
+    `SELECT ${PRODUCT_COLUMNS}, li.slot, li.position FROM ${T.lookItems} li
+     JOIN ${T.products} p ON p.id = li.product_id JOIN ${T.brands} b ON b.id = p.brand_id
+     WHERE li.look_id = ? AND p.status = 'active' AND b.status = 'active' ORDER BY li.position`,
+  )
+    .bind(id)
+    .all<Record<string, unknown>>();
+  const items = (rows.results ?? []).map((row) => ({ slot: String(row.slot), item: toResultItem(row) }));
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `${look.title} — ${c.env.SITE_NAME}`,
+        description: truncate(`${items.length}-piece look for ${look.prompt}, ${formatINR(look.total_price)} total.`, 150),
+        path: `/looks/${id}`,
+        nonce: c.var.app.nonce,
+        showHeaderSearch: true,
+        ogImage: items[0]?.item.image_url ?? undefined,
+      },
+      `<div class="wrap"><section class="section"><p class="eyebrow">Shareable look</p><h1>${esc(look.title)}</h1>
+        <p class="muted">${esc(look.prompt)}</p>
+        <div class="stat-row" style="margin-top:var(--s5)"><div class="stat"><div class="label">Total</div><div class="value">${esc(formatINR(look.total_price))}</div></div>
+          <div class="stat"><div class="label">Budget</div><div class="value">${esc(formatINR(look.budget))}</div></div>
+          <div class="stat"><div class="label">Pieces</div><div class="value">${items.length}</div></div></div>
+        <label class="field"><span>Share link</span><input class="input" readonly value="${esc(`${c.env.SITE_URL}/looks/${id}`)}" onclick="this.select()"></label>
+      </section>
+      <div class="look-grid">${items
+        .map(
+          ({ slot, item }) => `<section><p class="eyebrow">${esc(label(slot))}</p>${productGrid([item], { now: Date.now() })}</section>`,
+        )
+        .join('')}</div></div>`,
+    ),
+  );
+});
+
+// ============================================================ shopper account
+
+pageRoutes.get('/account', async (c) => {
+  const { app } = c.var;
+  const user = app.session.user_id
+    ? await c.env.DB.prepare(`SELECT email, name FROM ${T.users} WHERE id = ? AND status = 'active'`)
+        .bind(app.session.user_id)
+        .first<{ email: string; name: string | null }>()
+    : null;
+
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Account — ${c.env.SITE_NAME}`,
+        description: 'Keep your Vestiq wardrobe across devices.',
+        path: '/account',
+        nonce: app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap-narrow"><section class="section">
+        <h1>Account</h1>
+        ${
+          user
+            ? `<div class="notice good" style="margin-top:var(--s4)">Signed in as <strong>${esc(user.email)}</strong>.</div>
+               <p class="muted">Your wardrobe, alerts, followed brands and saved searches now follow this account.</p>
+               <p><a class="btn btn-primary" href="/wardrobe">Open wardrobe</a></p>
+               <form method="POST" action="/account/logout" style="margin-top:var(--s4)"><button class="btn btn-sm" type="submit">Sign out</button></form>`
+            : `<p class="muted" style="margin-top:var(--s3)">Use a one-time email link—no password. Anything saved in this browser will be merged into your account.</p>
+               <form method="POST" action="/account/request" style="margin-top:var(--s5)">
+                 <label class="field"><span>Email address</span><input type="email" name="email" required autocomplete="email"></label>
+                 <button class="btn btn-primary" type="submit">Email me a sign-in link</button>
+               </form>`
+        }
+      </section></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/account/request', async (c) => {
+  const limited = await rateLimit(c.env, 'write', rateIdentity(c.req.raw, c.var.app.session.id));
+  if (!limited.ok) return c.text('Too many requests. Try again later.', 429);
+  if (!c.env.RESEND_API_KEY) {
+    return c.html(
+      layout(
+        {
+          env: c.env,
+          title: `Email unavailable — ${c.env.SITE_NAME}`,
+          description: 'Email sign-in is not configured.',
+          path: '/account',
+          nonce: c.var.app.nonce,
+          noindex: true,
+        },
+        `<div class="wrap-narrow"><section class="section"><h1>Email isn’t configured yet.</h1><p class="muted">Your browser-bound wardrobe still works. The operator must configure Resend before cross-device sign-in can be used.</p></section></div>`,
+      ),
+      503,
+    );
+  }
+
+  const form = await c.req.formData();
+  const email = String(form.get('email') ?? '').trim().toLowerCase().slice(0, 200);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return c.text('Check the email address.', 400);
+
+  const token = newId('', 48);
+  const tokenHash = await sha256Hex(token);
+  const tokenId = newId('at');
+  await c.env.DB.prepare(
+    `INSERT INTO ${T.authTokens} (id, email, token_hash, expires_at, created_at) VALUES (?,?,?,?,?)`,
+  )
+    .bind(tokenId, email, tokenHash, Date.now() + 20 * 60_000, Date.now())
+    .run();
+
+  try {
+    await sendEmail(c.env, {
+      to: email,
+      from: 'Vestiq <hello@vestiq.in>',
+      subject: 'Your Vestiq sign-in link',
+      text: `Use this one-time link to sign in to Vestiq:\n\n${c.env.SITE_URL}/account/verify?token=${encodeURIComponent(token)}\n\nIt expires in 20 minutes. If you did not request it, ignore this email.`,
+    });
+  } catch (err) {
+    await c.env.DB.prepare(`DELETE FROM ${T.authTokens} WHERE id = ?`).bind(tokenId).run();
+    return c.text(`Could not send the sign-in email: ${String(err).slice(0, 80)}`, 502);
+  }
+
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Check your email — ${c.env.SITE_NAME}`,
+        description: 'Your sign-in link is on its way.',
+        path: '/account',
+        nonce: c.var.app.nonce,
+        noindex: true,
+      },
+      `<div class="wrap-narrow"><section class="section"><h1>Check your email.</h1><p class="muted">We sent a one-time sign-in link to <strong>${esc(email)}</strong>. It expires in 20 minutes.</p></section></div>`,
+    ),
+  );
+});
+
+pageRoutes.get('/account/verify', async (c) => {
+  const token = (c.req.query('token') ?? '').slice(0, 80);
+  if (!/^[0-9a-z]{48}$/.test(token)) return c.text('Invalid or expired sign-in link.', 400);
+  const tokenHash = await sha256Hex(token);
+  const auth = await c.env.DB.prepare(
+    `SELECT id, email FROM ${T.authTokens}
+     WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+  )
+    .bind(tokenHash, Date.now())
+    .first<{ id: string; email: string }>();
+  if (!auth) return c.text('Invalid or expired sign-in link.', 400);
+
+  let user = await c.env.DB.prepare(`SELECT id, status FROM ${T.users} WHERE email = ?`)
+    .bind(auth.email)
+    .first<{ id: string; status: string }>();
+  if (user && user.status !== 'active') return c.text('This account is unavailable.', 403);
+  if (!user) {
+    const id = newId('u');
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO ${T.users} (id, email, created_at, last_seen_at) VALUES (?,?,?,?)`,
+    )
+      .bind(id, auth.email, Date.now(), Date.now())
+      .run();
+    user = await c.env.DB.prepare(`SELECT id, status FROM ${T.users} WHERE email = ?`)
+      .bind(auth.email)
+      .first<{ id: string; status: string }>();
+  }
+  if (!user) return c.text('Could not create account.', 500);
+
+  // Claim before merging. The conditional update makes the link truly one-use
+  // even when two browser requests arrive at the same time.
+  const claimed = await c.env.DB.prepare(
+    `UPDATE ${T.authTokens} SET used_at = ?
+     WHERE id = ? AND used_at IS NULL AND expires_at > ?`,
+  )
+    .bind(Date.now(), auth.id, Date.now())
+    .run();
+  if (!claimed.meta.changes) return c.text('Invalid or expired sign-in link.', 400);
+
+  const anonymousOwner = ownerKey(c.var.app.session);
+  const userOwner = `u:${user.id}`;
+  await mergeOwner(c.env, anonymousOwner, userOwner);
+  await c.env.DB.prepare(`UPDATE ${T.users} SET last_seen_at = ? WHERE id = ?`)
+    .bind(Date.now(), user.id)
+    .run();
+  c.var.app.session.user_id = user.id;
+  await saveSession(c.env, c.var.app.session);
+  return c.redirect('/wardrobe?signed_in=1', 303);
+});
+
+pageRoutes.post('/account/logout', async (c) => {
+  delete c.var.app.session.user_id;
+  await saveSession(c.env, c.var.app.session);
+  return c.redirect('/account', 303);
+});
+
+// ============================================================ taste onboarding
+
+pageRoutes.get('/taste', (c) => {
+  const current = c.var.app.session.taste ?? {};
+  const values = [
+    ...ALL_STYLES.map((value) => ({ value, group: 'Style' })),
+    ...ALL_MATERIALS.slice(0, 14).map((value) => ({ value, group: 'Fabric' })),
+    ...ALL_COLORS.slice(0, 18).map((value) => ({ value, group: 'Colour' })),
+  ];
+  const groups = ['Style', 'Fabric', 'Colour']
+    .map(
+      (group) => `<fieldset style="margin-top:var(--s6)"><legend><h2>${group}</h2></legend>
+        <div class="taste-grid">${values
+          .filter((item) => item.group === group)
+          .map(
+            (item) => `<div class="taste-choice"><span>${esc(label(item.value))}</span>
+              <label><input type="radio" name="taste:${esc(item.value)}" value="1"${current[item.value] > 0 ? ' checked' : ''}> Like</label>
+              <label><input type="radio" name="taste:${esc(item.value)}" value="-1"${current[item.value] < 0 ? ' checked' : ''}> Avoid</label>
+              <label><input type="radio" name="taste:${esc(item.value)}" value="0"${current[item.value] === undefined || current[item.value] === 0 ? ' checked' : ''}> Neutral</label>
+            </div>`,
+          )
+          .join('')}</div></fieldset>`,
+    )
+    .join('');
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Your taste — ${c.env.SITE_NAME}`,
+        description: 'Tune subtle preferences in Vestiq ranking.',
+        path: '/taste',
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap"><section class="section"><h1>Your taste</h1>
+        <p class="muted">These preferences only break close ranking ties; they never hide otherwise relevant results.</p>
+        <form method="POST" action="/taste">${groups}<button class="btn btn-primary" type="submit" style="margin-top:var(--s6)">Save preferences</button></form>
+      </section></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/taste', async (c) => {
+  const form = await c.req.formData();
+  const allowed = new Set([...ALL_STYLES, ...ALL_MATERIALS, ...ALL_COLORS]);
+  const taste: Record<string, number> = {};
+  for (const [key, raw] of form.entries()) {
+    if (!key.startsWith('taste:')) continue;
+    const token = key.slice(6);
+    if (!allowed.has(token)) continue;
+    const value = Number(raw);
+    if (value === 1 || value === -1) taste[token] = value;
+  }
+  c.var.app.session.taste = taste;
+  await saveSession(c.env, c.var.app.session);
+  return c.redirect('/drops?taste=saved', 303);
 });
 
 // ============================================================ static pages
@@ -1288,14 +1833,17 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
     description: 'What we collect and why.',
     body: `<h1>Privacy</h1>
       <p><strong>Anonymous by default.</strong> You can search, save and set alerts.
-      We set one first-party cookie holding a random session id.
-      It contains no personal information.</p>
+      We set one first-party cookie holding a random session id. It contains no
+      personal information. If you choose passwordless sign-in, we store your email
+      and merge your wardrobe so it remains available across devices.</p>
       <h2>What we store</h2>
       <ul>
         <li>Your searches and which results you clicked, to improve ranking and to
         tell brands what people are looking for — in aggregate, never tied to you.</li>
-        <li>Items you save and alerts you set, against your session id.</li>
-        <li>Your email address, only if you give it to us for alerts.</li>
+        <li>Items you save, looks you build, brands you follow, taste settings and
+        alerts you set, against your session or signed-in account.</li>
+        <li>Your email address, only if you give it to us for alerts, saved-search
+        digests or passwordless sign-in.</li>
       </ul>
       <h2>What we don't do</h2>
       <ul>
@@ -1305,8 +1853,10 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
         a normal referral, the same as any link.</li>
       </ul>
       <h2>Your controls</h2>
-      <p>Clearing cookies detaches you from your saved items. To request deletion of
-      data associated with your email, contact <a href="mailto:privacy@vestiq.in">privacy@vestiq.in</a> and we'll
+      <p>If you stay anonymous, clearing cookies detaches you from saved items. If
+      you sign in, your wardrobe remains attached to your account so you can return
+      on another device. To request deletion of data associated with your email,
+      contact <a href="mailto:privacy@vestiq.in">privacy@vestiq.in</a> and we'll
       action it within 30 days.</p>`,
   },
   terms: {
@@ -1356,6 +1906,137 @@ for (const [slug, page] of Object.entries(STATIC_PAGES)) {
 
 // ============================================================ data helpers
 
+interface LookSelection {
+  slot: string;
+  item: ResultItem;
+}
+
+interface LookSlot {
+  slot: string;
+  categories: string[];
+  required: boolean;
+}
+
+const FOOTWEAR = new Set(['sneakers', 'heels', 'flats', 'sandals', 'boots']);
+const ACCESSORIES = new Set(['bags', 'clutches', 'jewellery', 'scarves', 'belts', 'sunglasses', 'watches']);
+const TOPS = new Set(['tops', 'shirts', 'tshirts', 'kurtas', 'blouses', 'sweaters', 'sweatshirts']);
+const BOTTOMS = new Set(['skirts', 'trousers', 'jeans', 'shorts']);
+
+function outfitSlots(baseCategories: string[], hasSeed: boolean): LookSlot[] {
+  const base = baseCategories[0] ?? 'dresses';
+  if (hasSeed) {
+    const complements = COMPLEMENTS[base] ?? ['heels', 'bags', 'jewellery'];
+    const clothing = complements.filter((category) => !FOOTWEAR.has(category) && !ACCESSORIES.has(category));
+    const footwear = complements.filter((category) => FOOTWEAR.has(category));
+    const accessories = complements.filter((category) => ACCESSORIES.has(category));
+    return [
+      ...(clothing.length ? [{ slot: 'pairing piece', categories: clothing, required: false }] : []),
+      { slot: 'footwear', categories: footwear.length ? footwear : ['heels', 'flats', 'sandals'], required: false },
+      { slot: 'accessory', categories: accessories.length ? accessories : ['bags', 'clutches', 'jewellery'], required: false },
+    ];
+  }
+
+  const slots: LookSlot[] = [{ slot: 'main piece', categories: baseCategories.length ? baseCategories : ['dresses', 'co-ord-sets', 'kurta-sets'], required: true }];
+  if (TOPS.has(base)) {
+    slots.push({ slot: 'bottom', categories: ['trousers', 'skirts', 'jeans'], required: true });
+  } else if (BOTTOMS.has(base)) {
+    slots.push({ slot: 'top', categories: ['tops', 'shirts', 'tshirts', 'kurtas'], required: true });
+  }
+  if (!FOOTWEAR.has(base)) {
+    slots.push({ slot: 'footwear', categories: ['heels', 'flats', 'sandals', 'sneakers'], required: false });
+  }
+  if (!ACCESSORIES.has(base)) {
+    slots.push({ slot: 'accessory', categories: ['bags', 'clutches', 'jewellery'], required: false });
+  }
+  return slots.slice(0, 4);
+}
+
+/**
+ * Search each outfit slot, then evaluate the small Cartesian product to find a
+ * coherent combination that stays under one total budget. This is a real total-
+ * budget optimiser rather than four unrelated per-item price caps.
+ */
+async function buildBudgetedLook(
+  env: Env,
+  prompt: string,
+  budget: number,
+  session: AppContext['session'],
+  seedId?: string,
+): Promise<{ items: LookSelection[]; total: number }> {
+  const { parseQueryCached } = await import('../search');
+  const parse = await parseQueryCached(env, prompt, () => undefined);
+  let seed: ResultItem | null = null;
+  if (seedId) {
+    const row = await env.DB.prepare(
+      `SELECT ${PRODUCT_COLUMNS} FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
+       WHERE p.id = ? AND p.status = 'active' AND p.availability != 'out_of_stock' AND b.status = 'active'`,
+    )
+      .bind(seedId)
+      .first<Record<string, unknown>>();
+    if (row) seed = toResultItem(row);
+  }
+  if (seed && seed.price > budget) return { items: [], total: 0 };
+
+  const baseCategories = seed ? [seed.category] : parse.categories;
+  const slots = outfitSlots(baseCategories, Boolean(seed));
+  const candidateGroups: Array<{ slot: LookSlot; items: ResultItem[] }> = [];
+  for (const slot of slots) {
+    const slotParse: ParsedQuery = {
+      ...parse,
+      semantic_text: `${parse.semantic_text || prompt}. ${slot.slot}: ${slot.categories.map(label).join(' or ')}`,
+      categories: slot.categories,
+      price_min: undefined,
+      price_max: Math.min(parse.price_max ?? budget, budget - (seed?.price ?? 0)),
+      // A reference brand is a style seed; an exact-brand constraint should not
+      // force every part of a full look to come from the same small catalogue.
+      brands: [],
+    };
+    const response = await search(env, {
+      query: `${prompt} ${slot.categories.map(label).join(' ')}`,
+      parse: slotParse,
+      perPage: 10,
+      session,
+    });
+    const items = response.items.filter((item) => item.id !== seed?.id && item.price <= budget).slice(0, 10);
+    if (slot.required && !items.length) return { items: [], total: 0 };
+    candidateGroups.push({ slot, items });
+  }
+
+  const fixed: LookSelection[] = seed ? [{ slot: 'foundation', item: seed }] : [];
+  let best: LookSelection[] = [];
+  let bestScore = -Infinity;
+  const chosen = new Set(fixed.map((selection) => selection.item.id));
+
+  const visit = (index: number, selections: LookSelection[], total: number, rankScore: number) => {
+    if (total > budget) return;
+    if (index === candidateGroups.length) {
+      const all = [...fixed, ...selections];
+      if (all.length < 2) return;
+      const score = all.length * 2 + rankScore + total / Math.max(1, budget);
+      if (score > bestScore) {
+        bestScore = score;
+        best = all;
+      }
+      return;
+    }
+
+    const group = candidateGroups[index];
+    if (!group.slot.required) visit(index + 1, selections, total, rankScore);
+    for (let rank = 0; rank < group.items.length; rank++) {
+      const item = group.items[rank];
+      if (chosen.has(item.id)) continue;
+      chosen.add(item.id);
+      selections.push({ slot: group.slot.slot, item });
+      visit(index + 1, selections, total + item.price, rankScore + (group.items.length - rank) / group.items.length);
+      selections.pop();
+      chosen.delete(item.id);
+    }
+  };
+
+  visit(0, [], seed?.price ?? 0, 0);
+  return { items: best, total: best.reduce((sum, selection) => sum + selection.item.price, 0) };
+}
+
 function toResultItem(row: Record<string, unknown>): ResultItem {
   return {
     ...rowToProduct(row),
@@ -1371,15 +2052,35 @@ function toResultItem(row: Record<string, unknown>): ResultItem {
   };
 }
 
-async function latestProducts(env: Env, limit: number): Promise<ResultItem[]> {
+async function latestProducts(
+  env: Env,
+  limit: number,
+  preferredBrandIds: string[] = [],
+  session?: AppContext['session'],
+): Promise<ResultItem[]> {
+  const preferred = preferredBrandIds.slice(0, 50);
+  const order = preferred.length
+    ? `CASE WHEN p.brand_id IN (${inClause(preferred.length)}) THEN 0 ELSE 1 END, p.first_seen_at DESC`
+    : 'p.first_seen_at DESC';
   const res = await env.DB.prepare(
     `SELECT ${PRODUCT_COLUMNS} FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
      WHERE p.status = 'active' AND p.availability != 'out_of_stock' AND b.status = 'active'
-     ORDER BY p.first_seen_at DESC LIMIT ?`,
+     ORDER BY ${order} LIMIT ?`,
   )
-    .bind(limit)
+    .bind(...preferred, session?.taste ? Math.min(160, Math.max(limit, limit * 3)) : limit)
     .all<Record<string, unknown>>();
-  return (res.results ?? []).map(toResultItem);
+  const items = (res.results ?? []).map(toResultItem);
+  if (session?.taste) {
+    const { tasteFactor } = await import('../search/rank');
+    const followed = new Set(preferred);
+    items.sort((a, b) => {
+      const followDelta = Number(followed.has(b.brand_id)) - Number(followed.has(a.brand_id));
+      if (followDelta) return followDelta;
+      const tasteDelta = tasteFactor(b, session) - tasteFactor(a, session);
+      return tasteDelta || b.first_seen_at - a.first_seen_at;
+    });
+  }
+  return items.slice(0, limit);
 }
 
 async function popularProducts(env: Env, limit: number): Promise<ResultItem[]> {

@@ -234,6 +234,7 @@ export const REJECT_EXPLANATIONS: Record<RejectReason, string> = {
   missing_title: 'No product title',
   missing_url: 'No product URL',
   bad_url: 'Product URL is not a valid https:// address',
+  placeholder_url: 'Product URL uses an example, test, or local placeholder domain',
   missing_price: 'No price',
   implausible_price: 'Price outside ₹49–₹50,00,000 (usually a currency/unit error)',
   unmappable_category: 'Could not map to a known category — add a clearer product_type or tags',

@@ -278,6 +278,10 @@ function initAlerts(): void {
     if (btn.dataset.bound) continue;
     btn.dataset.bound = '1';
     btn.addEventListener('click', async () => {
+      if (btn.getAttribute('aria-pressed') === 'true') {
+        window.location.href = '/wardrobe';
+        return;
+      }
       const productId = btn.dataset.alert!;
       const kind = btn.dataset.kind ?? 'price_drop';
       const markArmed = () => {

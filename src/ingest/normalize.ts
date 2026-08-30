@@ -1,5 +1,5 @@
 import type { Availability, Gender } from '../types';
-import { slugify, unique } from '../lib/util';
+import { isPlaceholderHostname, slugify, unique } from '../lib/util';
 import {
   CATEGORY_INDEX,
   COLOR_INDEX,
@@ -66,6 +66,7 @@ export type RejectReason =
   | 'missing_title'
   | 'missing_url'
   | 'bad_url'
+  | 'placeholder_url'
   | 'missing_price'
   | 'implausible_price'
   | 'unmappable_category'
@@ -129,6 +130,7 @@ export function normaliseItem(raw: RawItem): NormaliseResult {
   try {
     const parsed = new URL(raw.url);
     if (parsed.protocol !== 'https:') return { ok: false, reason: 'bad_url' };
+    if (isPlaceholderHostname(parsed.hostname)) return { ok: false, reason: 'placeholder_url' };
     url = parsed.toString();
   } catch {
     return { ok: false, reason: 'bad_url' };

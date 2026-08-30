@@ -295,6 +295,24 @@ apiRoutes.post('/api/alert', async (c) => {
   return c.json({ ok: true, needs_email: false });
 });
 
+const AlertCancelBody = z.object({ alert_id: z.string().min(1).max(40) });
+
+apiRoutes.post('/api/alert/cancel', async (c) => {
+  const blocked = await gate(c, 'write');
+  if (blocked) return blocked;
+  const parsed = AlertCancelBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
+
+  const result = await c.env.DB.prepare(
+    `UPDATE ${T.alerts} SET status = 'cancelled'
+     WHERE id = ? AND owner_key = ? AND status = 'armed'`,
+  )
+    .bind(parsed.data.alert_id, ownerKey(c.var.app.session))
+    .run();
+  if (!result.meta.changes) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------- saved intents
 
 const IntentBody = z.object({ query: z.string().min(3).max(300), email: z.string().email().optional() });
@@ -305,20 +323,55 @@ apiRoutes.post('/api/intent', async (c) => {
   const parsed = IntentBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
 
+  let deliveryEmail = parsed.data.email;
+  if (!deliveryEmail && c.var.app.session.user_id) {
+    const user = await c.env.DB.prepare(
+      `SELECT email FROM ${T.users} WHERE id = ? AND status = 'active'`,
+    )
+      .bind(c.var.app.session.user_id)
+      .first<{ email: string | null }>();
+    deliveryEmail = user?.email ?? undefined;
+  }
+  if (!deliveryEmail) return c.json({ ok: false, needs_email: true });
+
+  const query = parsed.data.query.trim();
+  const initial = await search(c.env, { query, perPage: 24, session: c.var.app.session });
   await c.env.DB.prepare(
-    `INSERT INTO ${T.savedIntents} (id, owner_key, query_raw, parse, email, status, created_at)
-     VALUES (?,?,?,'{}',?, 'active', ?)
-     ON CONFLICT(owner_key, query_raw) DO UPDATE SET status = 'active'`,
+    `INSERT INTO ${T.savedIntents}
+      (id, owner_key, query_raw, parse, email, seen_ids, last_run_at, status, created_at)
+     VALUES (?,?,?,?,?,?,?, 'active', ?)
+     ON CONFLICT(owner_key, query_raw) DO UPDATE SET
+       status = 'active', email = excluded.email, parse = excluded.parse,
+       seen_ids = excluded.seen_ids, last_run_at = excluded.last_run_at`,
   )
     .bind(
       newId('si'),
       ownerKey(c.var.app.session),
-      parsed.data.query.trim(),
-      parsed.data.email ?? null,
+      query,
+      JSON.stringify(initial.parse),
+      deliveryEmail,
+      JSON.stringify(initial.items.map((item) => item.id)),
+      Date.now(),
       Date.now(),
     )
     .run();
 
+  return c.json({ ok: true, needs_email: false });
+});
+
+const IntentCancelBody = z.object({ intent_id: z.string().min(1).max(40) });
+
+apiRoutes.post('/api/intent/cancel', async (c) => {
+  const blocked = await gate(c, 'write');
+  if (blocked) return blocked;
+  const parsed = IntentCancelBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
+  const result = await c.env.DB.prepare(
+    `UPDATE ${T.savedIntents} SET status = 'cancelled' WHERE id = ? AND owner_key = ?`,
+  )
+    .bind(parsed.data.intent_id, ownerKey(c.var.app.session))
+    .run();
+  if (!result.meta.changes) return c.json({ error: 'not_found' }, 404);
   return c.json({ ok: true });
 });
 

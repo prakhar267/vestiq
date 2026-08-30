@@ -7,6 +7,7 @@ import {
   formatINR,
   ftsQuote,
   isBotUA,
+  isPlaceholderHostname,
   normaliseQuery,
   safeEqual,
   safeJson,
@@ -110,6 +111,17 @@ describe('misc helpers', () => {
   it('slugifies unicode and punctuation', () => {
     expect(slugify('Café Kurta — Blue!')).toBe('cafe-kurta-blue');
     expect(slugify('   ')).toBe('item');
+  });
+
+  it('identifies reserved merchant destinations without blocking real domains', () => {
+    expect(isPlaceholderHostname('solesand.example.in')).toBe(true);
+    expect(isPlaceholderHostname('https://brand.example/products.json')).toBe(true);
+    expect(isPlaceholderHostname('shop.test')).toBe(true);
+    expect(isPlaceholderHostname('test')).toBe(true);
+    expect(isPlaceholderHostname('example.com')).toBe(true);
+    expect(isPlaceholderHostname('localhost')).toBe(true);
+    expect(isPlaceholderHostname('okhai.org')).toBe(false);
+    expect(isPlaceholderHostname('https://shop.nicobar.com/products.json')).toBe(false);
   });
 
   it('truncates with an ellipsis only when needed', () => {
@@ -1088,8 +1100,8 @@ describe('normaliseItem', () => {
   const valid = {
     external_id: '1',
     title: 'Block-printed Cotton Kurta Set',
-    url: 'https://brand.example.in/p/1',
-    image_url: 'https://brand.example.in/i.jpg',
+    url: 'https://brand.fashion/p/1',
+    image_url: 'https://brand.fashion/i.jpg',
     price_rupees: 2499,
     product_type: 'Kurta Set',
   };
@@ -1123,6 +1135,13 @@ describe('normaliseItem', () => {
     expect(normaliseItem({ ...valid, image_url: undefined, images: [] })).toEqual({
       ok: false,
       reason: 'missing_image',
+    });
+  });
+
+  it('rejects placeholder product destinations', () => {
+    expect(normaliseItem({ ...valid, url: 'https://brand.example.in/p' })).toEqual({
+      ok: false,
+      reason: 'placeholder_url',
     });
   });
 

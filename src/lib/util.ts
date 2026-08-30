@@ -17,6 +17,45 @@ export async function sha256Hex(input: string): Promise<string> {
 }
 
 /**
+ * Hosts that can only be fixtures, documentation examples, or local services.
+ * None can be a shopper-facing merchant destination. Keep this centralised so
+ * signup, approval, ingestion readiness, and production health cannot drift.
+ */
+export function isPlaceholderHostname(input: string | null | undefined): boolean {
+  if (!input) return true;
+  let hostname = input.trim().toLowerCase().replace(/\.$/, '');
+  try {
+    // Accept either a bare hostname from vestiq_brands or a complete URL.
+    hostname = new URL(/^https?:\/\//i.test(hostname) ? hostname : `https://${hostname}`).hostname
+      .toLowerCase()
+      .replace(/\.$/, '');
+  } catch {
+    return true;
+  }
+
+  return (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === 'example' ||
+    hostname.endsWith('.example') ||
+    hostname === 'example.com' ||
+    hostname.endsWith('.example.com') ||
+    hostname === 'example.in' ||
+    hostname.endsWith('.example.in') ||
+    hostname === 'example.org' ||
+    hostname.endsWith('.example.org') ||
+    hostname === 'example.net' ||
+    hostname.endsWith('.example.net') ||
+    hostname === 'test' ||
+    hostname.endsWith('.test') ||
+    hostname === 'invalid' ||
+    hostname.endsWith('.invalid') ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1'
+  );
+}
+
+/**
  * Timing-safe string compare. Guards the admin token and merchant API keys
  * against timing oracles.
  */

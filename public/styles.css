@@ -431,9 +431,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .stat { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s4); }
 .stat .label { font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-3); }
 .stat .value { font-family: var(--serif); font-size: 1.75rem; margin-top: var(--s1); font-variant-numeric: tabular-nums; }
+.look-grid { display: grid; gap: var(--s6); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.look-grid .grid { grid-template-columns: 1fr; }
 
 .field { display: block; margin-bottom: var(--s4); }
 .field > span { display: block; font-size: var(--t-sm); color: var(--ink-2); margin-bottom: var(--s1); }
+.taste-grid { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.taste-choice { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); display: grid; gap: var(--s2); }
+.taste-choice > span { font-weight: 600; }
+.taste-choice label { font-size: var(--t-sm); color: var(--ink-2); }
 input[type="text"], input[type="email"], input[type="url"], input[type="number"], input[type="password"], textarea, .input {
   width: 100%; min-height: 44px; padding: var(--s2) var(--s3);
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);

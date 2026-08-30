@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AppContext, Env } from '../types';
 import { T, audit } from '../lib/db';
-import { esc, newId, sha256Hex, slugify, timeAgo, truncate } from '../lib/util';
+import { esc, isPlaceholderHostname, newId, sha256Hex, slugify, timeAgo, truncate } from '../lib/util';
 import { layout } from '../ui/layout';
 import { sectionHead } from '../ui/components';
 import { enqueueJob } from '../jobs';
@@ -151,8 +151,16 @@ merchantRoutes.post('/merchant/signup', async (c) => {
     const u = new URL(data.store_url);
     if (u.protocol !== 'https:') throw new Error('https required');
     domain = u.hostname.toLowerCase();
+    if (isPlaceholderHostname(domain)) throw new Error('placeholder domain');
   } catch {
-    return c.html(shell(c, 'List your brand', `<div class="notice bad">Store URL must be a valid https:// address.</div>`), 400);
+    return c.html(
+      shell(
+        c,
+        'List your brand',
+        `<div class="notice bad">Store URL must be a real public https:// address. Example and test domains cannot be listed.</div>`,
+      ),
+      400,
+    );
   }
 
   const existing = await c.env.DB.prepare(`SELECT id FROM ${T.merchants} WHERE email = ?`)
@@ -382,6 +390,11 @@ merchantRoutes.get('/merchant/feed', async (c) => {
           </select></label>
         <button class="btn btn-primary" type="submit">Save &amp; sync now</button>
       </form>
+      <form method="POST" action="/merchant/feed/status" style="margin-top:var(--s3)">
+        <input type="hidden" name="action" value="${m.feed_status === 'paused' ? 'resume' : 'pause'}">
+        <button class="btn btn-sm" type="submit">${m.feed_status === 'paused' ? 'Resume automatic syncing' : 'Pause automatic syncing'}</button>
+        <span class="tiny">Current status: ${esc(m.feed_status)}</span>
+      </form>
       <div class="notice" style="margin-top:var(--s5);max-width:560px">
         <strong>CSV columns we accept:</strong>
         <p class="tiny" style="margin:var(--s2) 0 0">
@@ -424,19 +437,50 @@ merchantRoutes.post('/merchant/feed', async (c) => {
   try {
     const u = new URL(feedUrl);
     if (u.protocol !== 'https:') throw new Error('https required');
+    if (isPlaceholderHostname(u.hostname)) throw new Error('placeholder domain');
   } catch {
-    return c.html(shell(c, 'Feed', `<div class="notice bad">Feed URL must be a valid https:// address.</div>`), 400);
+    return c.html(
+      shell(c, 'Feed', `<div class="notice bad">Feed URL must be a real public https:// address.</div>`),
+      400,
+    );
   }
 
   await c.env.DB.prepare(
     `UPDATE ${T.merchants} SET feed_url = ?, feed_type = ?, feed_status = 'pending', next_sync_at = ? WHERE id = ?`,
   )
-    .bind(feedUrl, feedType, Date.now(), m.id)
+    .bind(feedUrl, feedType, Date.now() + 30 * 60_000, m.id)
     .run();
 
   await enqueueJob(c.env, 'feed_sync', { merchant_id: m.id, brand_id: m.brand_id });
   await audit(c.env, `merchant:${m.id}`, 'feed_updated', m.brand_id, { feedType });
 
+  return c.redirect('/merchant/feed', 302);
+});
+
+merchantRoutes.post('/merchant/feed/status', async (c) => {
+  const m = requireMerchant(c);
+  if (!m) return c.redirect('/merchant/login', 302);
+
+  const form = await c.req.formData();
+  const action = String(form.get('action') ?? '');
+  if (!['pause', 'resume'].includes(action)) return c.text('bad action', 400);
+
+  if (action === 'pause') {
+    await c.env.DB.prepare(
+      `UPDATE ${T.merchants} SET feed_status = 'paused', next_sync_at = NULL WHERE id = ?`,
+    )
+      .bind(m.id)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      `UPDATE ${T.merchants} SET feed_status = 'pending', next_sync_at = ? WHERE id = ?`,
+    )
+      .bind(Date.now() + 30 * 60_000, m.id)
+      .run();
+    await enqueueJob(c.env, 'feed_sync', { merchant_id: m.id, brand_id: m.brand_id });
+  }
+
+  await audit(c.env, `merchant:${m.id}`, `feed_${action}`, m.brand_id);
   return c.redirect('/merchant/feed', 302);
 });
 
