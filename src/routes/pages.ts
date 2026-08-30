@@ -1918,7 +1918,18 @@ interface LookSlot {
 }
 
 const FOOTWEAR = new Set(['sneakers', 'heels', 'flats', 'sandals', 'boots']);
-const ACCESSORIES = new Set(['bags', 'clutches', 'jewellery', 'scarves', 'belts', 'sunglasses', 'watches']);
+const ACCESSORIES = new Set([
+  'bags',
+  'clutches',
+  'jewellery',
+  'scarves',
+  'belts',
+  'sunglasses',
+  'watches',
+  'socks',
+  'hats',
+  'umbrellas',
+]);
 const TOPS = new Set(['tops', 'shirts', 'tshirts', 'kurtas', 'blouses', 'sweaters', 'sweatshirts']);
 const BOTTOMS = new Set(['skirts', 'trousers', 'jeans', 'shorts']);
 

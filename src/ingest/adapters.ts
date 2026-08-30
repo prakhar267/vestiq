@@ -8,7 +8,7 @@ import type { RawItem } from './normalize';
  * supply these URLs, so they are hostile input.
  */
 
-export type FeedType = 'shopify' | 'gmc' | 'csv';
+export type FeedType = 'shopify' | 'gmc' | 'csv' | 'souled_store';
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
@@ -25,6 +25,18 @@ export const SHOPIFY_PAGE_SIZE = 250;
 export const SHOPIFY_MAX_ITEMS = 5_000;
 export const SHOPIFY_MAX_PAGE_REQUESTS = Math.ceil(SHOPIFY_MAX_ITEMS / SHOPIFY_PAGE_SIZE) + 1;
 export const SHOPIFY_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * The Souled Store's storefront requests its artist catalogues from this
+ * read-only GraphQL endpoint. This adapter is deliberately collection-scoped:
+ * a merchant supplies the public `/artists/:slug` URL and every returned item
+ * must carry that exact artist slug.
+ */
+export const SOULED_STORE_API = 'https://api.thesouledstore.com/api/v2/graphql';
+export const SOULED_STORE_PAGE_SIZE = 72;
+export const SOULED_STORE_MAX_PAGES = 20;
+export const SOULED_STORE_MAX_ITEMS = SOULED_STORE_PAGE_SIZE * SOULED_STORE_MAX_PAGES;
+export const SOULED_STORE_MAX_BYTES = 32 * 1024 * 1024;
 
 /** Hostnames that must never be fetched, even though Workers can't reach most. */
 const BLOCKED_HOST = /^(localhost|.*\.local|.*\.internal|metadata\..*|169\.254\..*|10\..*|127\..*|192\.168\..*|172\.(1[6-9]|2\d|3[01])\..*|\[?::1\]?|0\.0\.0\.0)$/i;
@@ -85,6 +97,38 @@ async function safeFetchResult(raw: string): Promise<SafeFetchResult> {
   }
 
   throw new Error('too many redirects');
+}
+
+/** Fixed-host POST companion used only by the authorised Souled Store adapter. */
+async function safeJsonPostResult(raw: string, payload: unknown): Promise<SafeFetchResult> {
+  const endpoint = assertSafeUrl(raw);
+  if (endpoint.hostname !== 'api.thesouledstore.com') {
+    throw new Error('Souled Store API host not permitted');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(endpoint.toString(), {
+      method: 'POST',
+      redirect: 'error',
+      signal: controller.signal,
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'user-agent': 'VestiqBot/1.0 (+https://vestiq.in/for-brands)',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`feed fetch failed: ${res.status}`);
+
+    const declared = parseInt(res.headers.get('content-length') ?? '0', 10);
+    if (declared > MAX_BODY_BYTES) throw new Error('feed too large');
+    const buf = await readCapped(res, MAX_BODY_BYTES);
+    return { body: new TextDecoder().decode(buf), bytes: buf.byteLength };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function safeFetch(raw: string): Promise<string> {
@@ -238,6 +282,177 @@ async function fetchShopifyFeed(feedUrl: string): Promise<{ items: RawItem[]; by
   // The loop can only exhaust when the empty-page probe itself returned a full
   // page. Refuse the partial catalogue rather than delisting unseen products.
   throw new Error('Shopify feed exceeds page limit');
+}
+
+// ------------------------------------------------------- The Souled Store
+
+interface SouledStoreProduct {
+  id?: string | number;
+  product?: string;
+  artist?: { name?: string; slug?: string } | null;
+  category?: { name?: string } | null;
+  price?: number;
+  genderType?: number;
+  stock?: number;
+  prodQty?: number;
+  splPrice?: number;
+  images?: string[];
+  productSlug?: string;
+}
+
+interface SouledStoreListingResponse {
+  errors?: unknown;
+  data?: {
+    listing?: {
+      products?: SouledStoreProduct[];
+      pagination?: { currentPage?: number; totalPages?: number };
+    };
+  };
+}
+
+function souledStoreCollection(raw: string): { artistSlug: string; origin: string } {
+  const url = assertSafeUrl(raw);
+  const host = url.hostname.toLowerCase();
+  if (!['www.thesouledstore.com', 'thesouledstore.com'].includes(host)) {
+    throw new Error('Souled Store feed must use thesouledstore.com');
+  }
+  if (url.username || url.password || url.port) {
+    throw new Error('Souled Store feed URL contains unsupported credentials or port');
+  }
+
+  const match = /^\/artists\/([a-z0-9][a-z0-9-]{1,120})\/?$/.exec(url.pathname);
+  if (!match) throw new Error('Souled Store feed must be an /artists/:slug collection URL');
+  return { artistSlug: match[1], origin: 'https://www.thesouledstore.com' };
+}
+
+function souledStoreImage(raw: string): string {
+  if (/^https:\/\//i.test(raw)) return raw;
+  return new URL(
+    `/public/theSoul/uploads/catalog/product/${raw.replace(/^\/+/, '')}`,
+    'https://prod-img.thesouledstore.com',
+  ).toString();
+}
+
+function souledStoreGender(genderType: number | undefined): string {
+  if (genderType === 1) return 'men';
+  if (genderType === 2) return 'women';
+  if (genderType === 3) return 'kids';
+  return 'unisex';
+}
+
+export function parseSouledStoreListing(
+  body: string,
+  artistSlug: string,
+  storefrontOrigin = 'https://www.thesouledstore.com',
+): { items: RawItem[]; currentPage: number; totalPages: number } {
+  const payload = JSON.parse(body) as SouledStoreListingResponse;
+  if (payload.errors) throw new Error('Souled Store catalogue returned GraphQL errors');
+
+  const listing = payload.data?.listing;
+  if (!listing || !Array.isArray(listing.products)) {
+    throw new Error('Souled Store catalogue response is missing products');
+  }
+
+  const items: RawItem[] = [];
+  for (const product of listing.products) {
+    // A response may include promotional or cross-sell cards. Only accept
+    // genuine products explicitly attached to the requested artist collection.
+    if (product.artist?.slug !== artistSlug) continue;
+    const id = product.id;
+    const title = product.product?.trim();
+    const slug = product.productSlug?.trim();
+    const regularPrice = Number(product.price);
+    if (id === undefined || !title || !slug || !Number.isFinite(regularPrice) || regularPrice <= 0) {
+      continue;
+    }
+
+    const salePrice = Number(product.splPrice);
+    const hasPublicSale = Number.isFinite(salePrice) && salePrice > 0 && salePrice < regularPrice;
+    const images = (product.images ?? []).filter((image) => typeof image === 'string' && image.trim()).map(souledStoreImage);
+    const destination = new URL(`/product/${encodeURIComponent(slug)}`, storefrontOrigin);
+    if (product.genderType) destination.searchParams.set('gte', String(product.genderType));
+
+    items.push({
+      external_id: String(id),
+      title,
+      category: product.category?.name,
+      product_type: product.category?.name,
+      tags: [product.artist?.name, product.artist?.slug, product.category?.name, 'official merchandise'].filter(
+        (value): value is string => Boolean(value),
+      ),
+      price_rupees: hasPublicSale ? salePrice : regularPrice,
+      mrp_rupees: hasPublicSale ? regularPrice : undefined,
+      url: destination.toString(),
+      image_url: images[0],
+      images,
+      availability: Number(product.prodQty) > 0 ? 'in_stock' : 'out_of_stock',
+      gender: souledStoreGender(product.genderType),
+      vendor: 'The Souled Store',
+    });
+  }
+
+  const currentPage = Math.max(1, Math.trunc(Number(listing.pagination?.currentPage) || 1));
+  const totalPages = Math.max(1, Math.trunc(Number(listing.pagination?.totalPages) || 1));
+  return { items, currentPage, totalPages };
+}
+
+function souledStoreListingQuery(artistSlug: string, page: number): string {
+  return `{
+    listing(
+      page: ${page},
+      size: ${SOULED_STORE_PAGE_SIZE},
+      isWeb: true,
+      sort: POPULARITY,
+      artist: ${JSON.stringify([artistSlug])},
+      tags: [],
+      filters: { price: [] }
+    ) {
+      products {
+        id product artist { name slug } category { name } price genderType
+        stock prodQty splPrice images productSlug
+      }
+      pagination { currentPage totalPages }
+    }
+  }`;
+}
+
+async function fetchSouledStoreFeed(feedUrl: string): Promise<{ items: RawItem[]; bytes: number }> {
+  const collection = souledStoreCollection(feedUrl);
+  const items: RawItem[] = [];
+  let bytes = 0;
+  let expectedPages = 1;
+
+  for (let page = 1; page <= expectedPages; page++) {
+    const fetched = await safeJsonPostResult(SOULED_STORE_API, {
+      query: souledStoreListingQuery(collection.artistSlug, page),
+      localcart: null,
+      is_ab_visible: true,
+    });
+    bytes += fetched.bytes;
+    if (bytes > SOULED_STORE_MAX_BYTES) {
+      throw new Error('Souled Store feed exceeds aggregate byte limit');
+    }
+
+    const parsed = parseSouledStoreListing(fetched.body, collection.artistSlug, collection.origin);
+    if (page === 1) {
+      expectedPages = parsed.totalPages;
+      if (expectedPages > SOULED_STORE_MAX_PAGES) {
+        throw new Error('Souled Store feed exceeds page limit');
+      }
+    } else if (parsed.totalPages !== expectedPages) {
+      throw new Error('Souled Store pagination changed during sync');
+    }
+    if (parsed.currentPage !== page) throw new Error('Souled Store returned an unexpected page');
+    if (parsed.items.length > SOULED_STORE_PAGE_SIZE) {
+      throw new Error('Souled Store feed page exceeds item limit');
+    }
+    items.push(...parsed.items);
+    if (items.length > SOULED_STORE_MAX_ITEMS) {
+      throw new Error('Souled Store feed exceeds item limit');
+    }
+  }
+
+  return { items, bytes };
 }
 
 // ---------------------------------------------------------------- google merchant
@@ -408,6 +623,7 @@ export async function fetchFeed(
   feedType: FeedType,
 ): Promise<{ items: RawItem[]; bytes: number }> {
   if (feedType === 'shopify') return fetchShopifyFeed(feedUrl);
+  if (feedType === 'souled_store') return fetchSouledStoreFeed(feedUrl);
 
   const fetched = await safeFetchResult(feedUrl);
   const body = fetched.body;

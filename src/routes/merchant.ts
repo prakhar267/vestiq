@@ -381,6 +381,7 @@ merchantRoutes.get('/merchant/feed', async (c) => {
               ['shopify', 'Shopify products.json'],
               ['gmc', 'Google Merchant Center XML'],
               ['csv', 'CSV'],
+              ['souled_store', 'The Souled Store artist collection'],
             ]
               .map(
                 ([v, l]) =>
@@ -432,7 +433,7 @@ merchantRoutes.post('/merchant/feed', async (c) => {
   const form = await c.req.formData();
   const feedUrl = String(form.get('feed_url') ?? '');
   const feedType = String(form.get('feed_type') ?? 'shopify');
-  if (!['shopify', 'gmc', 'csv'].includes(feedType)) return c.text('bad feed type', 400);
+  if (!['shopify', 'gmc', 'csv', 'souled_store'].includes(feedType)) return c.text('bad feed type', 400);
 
   try {
     const u = new URL(feedUrl);

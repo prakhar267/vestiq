@@ -143,7 +143,7 @@ src/
   lib/              db · session · ratelimit · log · util (money, escaping)
   ai/               provider chain · gemini · workers-ai · heuristic parser · lexicon
   search/           orchestrator · lexical (FTS5) · vector (int8/KV) · rank · facets
-  ingest/           feed adapters (shopify/GMC/CSV) · normalise · upsert
+  ingest/           feed adapters (Shopify/GMC/CSV/Souled Store) · normalise · upsert
   jobs/             job queue + scheduled task dispatcher
   routes/           pages · api · admin · merchant · seo · go (outbound)
   ui/               layout (CSP, JSON-LD) · components

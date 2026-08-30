@@ -259,7 +259,7 @@ CREATE TABLE IF NOT EXISTS vestiq_merchants (
   api_key_hash TEXT NOT NULL,                      -- sha256 hex, never the key itself
   api_key_hint TEXT,                               -- last 4 chars, for the UI
   feed_url     TEXT,
-  feed_type    TEXT NOT NULL DEFAULT 'shopify',    -- shopify|gmc|csv
+  feed_type    TEXT NOT NULL DEFAULT 'shopify',    -- shopify|gmc|csv|souled_store
   feed_status  TEXT NOT NULL DEFAULT 'pending',    -- pending|healthy|failing|paused
   sync_every_min INTEGER NOT NULL DEFAULT 360,
   last_sync_at INTEGER,

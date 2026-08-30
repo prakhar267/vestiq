@@ -36,9 +36,12 @@ import {
   parseCsvRows,
   parseGoogleMerchant,
   parseShopify,
+  parseSouledStoreListing,
   SHOPIFY_MAX_BYTES,
   SHOPIFY_MAX_PAGE_REQUESTS,
   SHOPIFY_PAGE_SIZE,
+  SOULED_STORE_API,
+  SOULED_STORE_PAGE_SIZE,
 } from '../src/ingest/adapters';
 import { normaliseItem, contentHash, embedText } from '../src/ingest/normalize';
 import { computeFacets, priceBandRange } from '../src/search/facets';
@@ -1012,6 +1015,83 @@ describe('Shopify parsing', () => {
     } finally {
       fetchMock.mockRestore();
     }
+  });
+});
+
+describe('The Souled Store collection adapter', () => {
+  const listing = (page: number, totalPages: number, products: unknown[]) =>
+    JSON.stringify({
+      data: { listing: { products, pagination: { currentPage: page, totalPages } } },
+    });
+
+  const product = (id: number, artistSlug = 'harry-potter-official-merchandise') => ({
+    id: String(id),
+    product: `Harry Potter Tee ${id}`,
+    artist: { name: 'Harry Potter™', slug: artistSlug },
+    category: { name: 'Oversized T-Shirts' },
+    price: 1499,
+    genderType: 1,
+    stock: 0,
+    prodQty: id === 2 ? 0 : 12,
+    splPrice: id === 1 ? 1299 : 0,
+    images: [`item-${id}.jpg`],
+    productSlug: `harry-potter-tee-${id}`,
+  });
+
+  it('maps public price, stock, image and destination without using the member-only price', () => {
+    const parsed = parseSouledStoreListing(
+      listing(1, 1, [product(1), product(2), product(3, 'another-artist')]),
+      'harry-potter-official-merchandise',
+    );
+
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items[0]).toMatchObject({
+      external_id: '1',
+      price_rupees: 1299,
+      mrp_rupees: 1499,
+      availability: 'in_stock',
+      gender: 'men',
+      url: 'https://www.thesouledstore.com/product/harry-potter-tee-1?gte=1',
+      image_url:
+        'https://prod-img.thesouledstore.com/public/theSoul/uploads/catalog/product/item-1.jpg',
+    });
+    expect(parsed.items[1].availability).toBe('out_of_stock');
+    const normalised = normaliseItem(parsed.items[0]);
+    expect(normalised.ok && normalised.item.category).toBe('tshirts');
+  });
+
+  it('fetches every collection page and rejects products outside the requested artist', async () => {
+    const bodies = [listing(1, 2, [product(1)]), listing(2, 2, [product(2), product(3, 'other')])];
+    const requests: { url: string; body: string }[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const body = String(init?.body ?? '');
+      requests.push({ url, body });
+      return new Response(bodies[requests.length - 1]);
+    });
+
+    try {
+      const result = await fetchFeed(
+        'https://www.thesouledstore.com/artists/harry-potter-official-merchandise?utm_source=test',
+        'souled_store',
+      );
+      expect(result.items.map((item) => item.external_id)).toEqual(['1', '2']);
+      expect(requests).toHaveLength(2);
+      expect(requests.every((request) => request.url === SOULED_STORE_API)).toBe(true);
+      expect(requests[0].body).toContain(`size: ${SOULED_STORE_PAGE_SIZE}`);
+      expect(requests[1].body).toContain('page: 2');
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('only accepts a real Souled Store artist collection URL', async () => {
+    await expect(
+      fetchFeed('https://example.com/artists/harry-potter-official-merchandise', 'souled_store'),
+    ).rejects.toThrow('must use thesouledstore.com');
+    await expect(
+      fetchFeed('https://www.thesouledstore.com/product/not-a-collection', 'souled_store'),
+    ).rejects.toThrow('must be an /artists/:slug collection URL');
   });
 });
 
