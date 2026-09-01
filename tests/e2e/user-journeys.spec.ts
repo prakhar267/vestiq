@@ -28,6 +28,21 @@ test.beforeEach(async ({ page }) => {
   await preparePage(page);
 });
 
+test('search submits with Enter before or without client JavaScript', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  try {
+    await page.goto('/');
+    const search = page.getByRole('combobox', { name: 'Search for clothing' }).first();
+    await search.fill('cotton dress');
+    await search.press('Enter');
+    await expect(page).toHaveURL(/\/search\?q=cotton(?:\+|%20)dress/);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('cotton dress');
+  } finally {
+    await context.close();
+  }
+});
+
 test('shopper can search, filter, sort, save, inspect, and remove a piece', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');

@@ -84,7 +84,7 @@ interface Suggestions {
 
 function initSearchBar(bar: HTMLElement): void {
   const form = $<HTMLFormElement>('form', bar);
-  const input = $<HTMLTextAreaElement>('textarea', bar);
+  const input = $<HTMLInputElement | HTMLTextAreaElement>('[name="q"]', bar);
   const panel = $<HTMLElement>('.suggestions', bar);
   const camera = $<HTMLButtonElement>('[data-camera]', bar);
   if (!form || !input || !panel) return;
@@ -147,22 +147,25 @@ function initSearchBar(bar: HTMLElement): void {
   }, 160);
 
   input.addEventListener('input', () => {
-    // Auto-grow up to the CSS max-height.
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, 88)}px`;
+    // Retained for any older server-rendered textarea during a rolling deploy.
+    if (input instanceof HTMLTextAreaElement) {
+      input.style.height = 'auto';
+      input.style.height = `${Math.min(input.scrollHeight, 88)}px`;
+    }
     fetchSuggestions();
   });
 
   input.addEventListener('focus', fetchSuggestions);
 
-  input.addEventListener('keydown', (e) => {
+  input.addEventListener('keydown', (event) => {
+    const e = event as KeyboardEvent;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (activeIndex >= 0 && items[activeIndex]) {
         location.href = items[activeIndex].href;
         return;
       }
-      if (input.value.trim()) form.submit();
+      if (input.value.trim()) form.requestSubmit();
       return;
     }
     if (panel.hidden) return;
@@ -194,6 +197,21 @@ function initSearchBar(bar: HTMLElement): void {
 
   document.addEventListener('click', (e) => {
     if (!bar.contains(e.target as Node)) close();
+  });
+
+  // A server-rendered search can take a moment while semantic recall runs. Give
+  // immediate feedback instead of leaving an apparently unresponsive button.
+  form.addEventListener('submit', (event) => {
+    input.value = input.value.trim();
+    if (!input.value) {
+      event.preventDefault();
+      input.focus();
+      return;
+    }
+    close();
+    form.setAttribute('aria-busy', 'true');
+    const submit = $<HTMLButtonElement>('button[type="submit"]', form);
+    if (submit) submit.disabled = true;
   });
 
   // Image search (U6). The button is hidden server-side and revealed only when

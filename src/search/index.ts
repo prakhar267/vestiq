@@ -447,7 +447,7 @@ export async function recordSearch(
 
 /** Trending queries for the home page, from the last 7 days of real searches. */
 export async function trendingQueries(env: Env, limit = 10): Promise<string[]> {
-  const cacheKey = `trending:queries:${limit}`;
+  const cacheKey = `trending:queries:v2:${limit}`;
   try {
     const cached = await env.CACHE.get(cacheKey, 'json');
     if (cached) return cached as string[];
@@ -457,11 +457,17 @@ export async function trendingQueries(env: Env, limit = 10): Promise<string[]> {
 
   try {
     const res = await env.DB.prepare(
-      `SELECT query_raw, COUNT(*) AS n
-       FROM ${T.searches}
-       WHERE ts > ? AND result_count > 0 AND length(query_raw) BETWEEN 8 AND 60
-       GROUP BY query_hash
-       ORDER BY n DESC
+      `WITH ranked AS (
+         SELECT query_hash, query_raw, result_count, ts,
+                ROW_NUMBER() OVER (PARTITION BY query_hash ORDER BY ts DESC) AS recency,
+                COUNT(*) OVER (PARTITION BY query_hash) AS n
+         FROM ${T.searches}
+         WHERE ts > ? AND length(query_raw) BETWEEN 3 AND 60
+       )
+       SELECT query_raw, n
+       FROM ranked
+       WHERE recency = 1 AND result_count > 0
+       ORDER BY n DESC, ts DESC
        LIMIT ?`,
     )
       .bind(Date.now() - 7 * 86_400_000, limit)

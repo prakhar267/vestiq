@@ -414,6 +414,19 @@ describe('toParsedQuery', () => {
   });
 });
 
+describe('AI capability ordering', () => {
+  it('prefers colocated Workers AI only for text parsing', async () => {
+    const { orderProvidersForParsing } = await import('../src/ai/provider');
+    const providers = [{ name: 'gemini' }, { name: 'workers-ai' }, { name: 'other' }];
+    expect(orderProvidersForParsing(providers).map((provider) => provider.name)).toEqual([
+      'workers-ai',
+      'gemini',
+      'other',
+    ]);
+    expect(providers.map((provider) => provider.name)).toEqual(['gemini', 'workers-ai', 'other']);
+  });
+});
+
 // ============================================================ fusion & ranking
 
 describe('reciprocal rank fusion', () => {

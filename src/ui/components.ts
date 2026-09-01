@@ -312,6 +312,7 @@ export function emptyState(response: SearchResponse): string {
     }
     <p style="margin-top:var(--s6)">
       <a class="btn" href="/stylist?q=${encodeURIComponent(response.query)}">Ask the stylist instead ${ICONS.arrow}</a>
+      <a class="btn" href="/drops">Browse live pieces</a>
     </p>
   </div>`;
 }

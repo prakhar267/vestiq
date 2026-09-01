@@ -299,7 +299,10 @@ class CompositeAi {
 
   async parseQuery(query: string): Promise<ParsedQuery> {
     const seed = heuristicParse(query);
-    for (const p of this.providers) {
+    // Workers AI is colocated with the Worker and is the reliable low-latency
+    // parser. Gemini remains first for embeddings/vision/chat, but must not add
+    // a multi-second failed network hop to every uncached text search.
+    for (const p of orderProvidersForParsing(this.providers)) {
       if (!p.parseQuery) continue;
       try {
         const out = await withTimeout(p.parseQuery(query, seed), 6000, null);
@@ -364,12 +367,19 @@ class CompositeAi {
   }
 }
 
+/** Capability-specific ordering: do not disturb the active embedding space. */
+export function orderProvidersForParsing<T extends { name: string }>(providers: T[]): T[] {
+  const rank = (name: string) => (name === 'workers-ai' ? 0 : name === 'gemini' ? 1 : 2);
+  return [...providers].sort((a, b) => rank(a.name) - rank(b.name));
+}
+
 export type Ai2 = CompositeAi;
 
 /**
  * Build the provider chain for this request.
- * Gemini first when a key is configured (better structured output and vision),
- * Workers AI next (always available on a connected account), heuristic last.
+ * Provider order is capability-specific: Gemini owns the active embedding,
+ * vision, and chat paths when configured; text parsing prefers colocated
+ * Workers AI (see orderProvidersForParsing), then falls back safely.
  */
 export async function getAi(env: Env, onDegrade: (m: string) => void = () => {}): Promise<Ai2> {
   const providers: AiProvider[] = [];

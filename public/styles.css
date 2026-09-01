@@ -168,11 +168,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
-.searchbar textarea {
-  flex: 1; border: 0; background: none; resize: none; padding: var(--s3) 0;
-  max-height: 5.5em; line-height: 1.4; field-sizing: content;
+.searchbar input[type="search"], .searchbar textarea {
+  flex: 1; min-width: 0; min-height: 44px; border: 0; background: none;
+  resize: none; padding: var(--s3) 0; max-height: 5.5em; line-height: 1.4;
+  appearance: none;
 }
-.searchbar textarea:focus { outline: none; }
+.searchbar input[type="search"] { width: 100%; field-sizing: fixed; }
+.searchbar textarea { field-sizing: content; }
+.searchbar input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.searchbar input[type="search"]:focus, .searchbar textarea:focus { outline: none; }
+.searchbar form[aria-busy="true"] { opacity: .72; }
+.searchbar form[aria-busy="true"] button[type="submit"] { cursor: wait; }
 .searchbar .actions { display: flex; align-items: center; gap: var(--s1); }
 
 .icon-btn {
@@ -410,7 +416,7 @@ select {
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(12px); border-top: 1px solid var(--line);
 }
-.mobile-dock .searchbar textarea {
+.mobile-dock .searchbar input[type="search"], .mobile-dock .searchbar textarea {
   field-sizing: fixed; height: 44px; min-height: 44px; max-height: 44px;
   overflow-y: auto;
 }

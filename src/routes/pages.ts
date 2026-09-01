@@ -292,14 +292,10 @@ pageRoutes.get('/', async (c) => {
     popularProducts(env, 10),
   ]);
 
-  const exampleQueries = [
-    'matching co-ord set for a Goa vacation',
-    'kitten heels under ₹4000',
-    'quiet luxury but for 35°C',
-    'what goes with wide-leg olive trousers',
-    'something like Sabyasachi but under ₹6000',
-    'beach wedding guest, not white',
-  ];
+  // Never advertise a dead search. Examples are derived from the live,
+  // in-stock catalogue rather than from aspirational categories we may not yet
+  // carry. As more merchants arrive, this surface updates automatically.
+  const exampleQueries = inventorySearchExamples([...freshDrops, ...picks], 6);
 
   const jsonLd = [
     {
@@ -324,7 +320,7 @@ pageRoutes.get('/', async (c) => {
   <h1>Fashion the internet hid from you.</h1>
   <p class="tagline">${esc(env.SITE_TAGLINE)} Search independent brands by mood, occasion, budget — or a screenshot.</p>
   ${searchBarShell('hero')}
-  <div class="examples">
+  ${exampleQueries.length ? `<div class="examples">
     <ul class="chips">
       ${exampleQueries
         .map(
@@ -333,7 +329,7 @@ pageRoutes.get('/', async (c) => {
         )
         .join('')}
     </ul>
-  </div>
+  </div>` : ''}
 </div></section>
 
 <hr class="divider">
@@ -2061,6 +2057,31 @@ function toResultItem(row: Record<string, unknown>): ResultItem {
     score: 0,
     match_reasons: [],
   };
+}
+
+/** Build homepage searches that are guaranteed to be backed by live items. */
+export function inventorySearchExamples(items: ResultItem[], limit = 6): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (query: string) => {
+    const clean = query.replace(/\s+/g, ' ').trim().slice(0, 80);
+    const key = normaliseQuery(clean);
+    if (!clean || seen.has(key) || out.length >= limit) return;
+    seen.add(key);
+    out.push(clean);
+  };
+
+  const count = (values: string[]) => {
+    const counts = new Map<string, number>();
+    for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  };
+
+  // Broad, useful entry points first; exact titles fill the remaining slots.
+  for (const [category] of count(items.map((item) => item.category))) add(label(category));
+  for (const [brand] of count(items.map((item) => item.brand_name))) add(brand);
+  for (const item of items) add(item.title);
+  return out;
 }
 
 async function latestProducts(

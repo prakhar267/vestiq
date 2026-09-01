@@ -158,6 +158,9 @@ describe('GET /', () => {
     expect(html).toContain('"@type":"WebSite"');
     expect(html).toContain('"SearchAction"');
     expect(html).toContain('rel="canonical"');
+    expect(html).toContain('type="search"');
+    expect(html).toContain('Kurta sets');
+    expect(html).not.toContain('matching co-ord set for a Goa vacation');
   });
 
   it('renders the free-launch purchase disclosure without monetisation claims', async () => {
@@ -207,6 +210,7 @@ describe('GET /search', () => {
     ).text();
     expect(html).toContain('Nothing matched that');
     expect(html).toMatch(/Raise budget|Any size|Any fabric|All /);
+    expect(html).toContain('Browse live pieces');
   });
 
   it('survives FTS5 operator injection in the query', async () => {

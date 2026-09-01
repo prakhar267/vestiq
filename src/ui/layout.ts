@@ -82,20 +82,24 @@ function header(opts: LayoutOptions): string {
 }
 
 /** Minimal search form. Progressive enhancement: works as a plain GET form with
- *  JS disabled; the island upgrades it with suggestions and the camera button. */
+ *  JS disabled; the island upgrades it with suggestions and the camera button.
+ *
+ * This must remain a single-line input. A textarea does not submit when Enter is
+ * pressed unless the client bundle has already loaded, which made search look
+ * dead on slow connections and whenever JavaScript was blocked. */
 export function searchBarShell(variant: 'hero' | 'header' | 'dock', value = ''): string {
   const id = `sb-${variant}`;
   const placeholder =
     variant === 'hero'
-      ? "Try 'matching co-ord set for a Goa vacation'"
+      ? 'Search the live catalogue by product, style, colour, or brand'
       : 'Describe what you want…';
   return `<div class="searchbar" data-searchbar data-variant="${variant}">
   <form action="/search" method="GET" role="search">
     <label class="sr-only" for="${id}">Search for clothing</label>
-    <textarea id="${id}" name="q" rows="1" placeholder="${esc(placeholder)}"
+    <input id="${id}" name="q" type="search" value="${esc(value)}" placeholder="${esc(placeholder)}"
       autocomplete="off" autocapitalize="none" spellcheck="false"
       role="combobox" aria-expanded="false" aria-autocomplete="list"
-      aria-controls="${id}-suggest" enterkeyhint="search">${esc(value)}</textarea>
+      aria-controls="${id}-suggest" enterkeyhint="search">
     <div class="actions">
       <button type="button" class="icon-btn" data-camera hidden
         aria-label="Search by image">${ICONS.camera}</button>
