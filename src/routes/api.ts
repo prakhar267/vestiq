@@ -8,7 +8,12 @@ import { rateIdentity, rateLimit, rateLimitHeaders } from '../lib/ratelimit';
 import { getAi, STYLIST_SYSTEM_PROMPT, type ChatMessage } from '../ai/provider';
 import { search } from '../search';
 import { productGrid } from '../ui/components';
-import { applyUrlFilters, validatedSearchParams, validatedSort } from './pages';
+import {
+  applyUrlFilters,
+  explicitHardFacets,
+  validatedSearchParams,
+  validatedSort,
+} from './pages';
 
 type Ctx = { Bindings: Env; Variables: { app: AppContext } };
 
@@ -55,6 +60,8 @@ apiRoutes.get('/api/search', async (c) => {
     sort,
     session: c.var.app.session,
     degradedHints,
+    filterMode: 'natural-language',
+    hardFacets: explicitHardFacets(params),
   });
 
   const { recordSearch } = await import('../search');

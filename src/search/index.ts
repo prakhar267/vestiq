@@ -59,6 +59,46 @@ export interface SearchOptions {
    * top. Without this, a parser fallback was invisible in `response.degraded`.
    */
   degradedHints?: string[];
+  /**
+   * Natural-language attributes such as occasion and silhouette are ranking
+   * preferences, not database requirements. Programmatic collection searches
+   * that provide `parse` remain strict by default.
+   */
+  filterMode?: 'natural-language' | 'strict';
+  /** Facets explicitly selected in the filter UI must remain hard constraints. */
+  hardFacets?: SearchHardFacet[];
+}
+
+export type SearchHardFacet = 'colors' | 'materials' | 'occasions' | 'style_tags';
+
+/**
+ * Build the parse used for hard filtering and structured recall.
+ *
+ * The model may infer fabrics from a benefit ("breathable" -> cotton/linen)
+ * and occasions from context ("Goa dinner" -> vacation/dinner). Those are
+ * excellent ranking signals but disastrous AND-filters when merchant feeds do
+ * not carry rich tags. Concrete colours/materials typed by the shopper remain
+ * hard, as do facets they explicitly selected in the UI.
+ */
+export function constraintParseForSearch(
+  query: string,
+  parse: ParsedQuery,
+  mode: 'natural-language' | 'strict',
+  hardFacets: SearchHardFacet[] = [],
+): ParsedQuery {
+  if (mode === 'strict') return parse;
+
+  const explicit = heuristicParse(query);
+  const hard = new Set(hardFacets);
+  return {
+    ...parse,
+    colors: hard.has('colors') ? parse.colors : explicit.colors,
+    materials: hard.has('materials') ? parse.materials : explicit.materials,
+    // Occasion and style language describes suitability/silhouette. Keep it in
+    // lexical, semantic, and score signals unless the shopper selected a facet.
+    occasions: hard.has('occasions') ? parse.occasions : [],
+    style_tags: hard.has('style_tags') ? parse.style_tags : [],
+  };
 }
 
 interface ReferenceProfile {
@@ -279,6 +319,13 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   const sort: SortKey = opts.sort ?? 'relevance';
 
   const parse = opts.parse ?? (await parseQueryCached(env, opts.query, onDegrade));
+  const filterMode = opts.filterMode ?? (opts.parse ? 'strict' : 'natural-language');
+  const filterParse = constraintParseForSearch(
+    opts.query,
+    parse,
+    filterMode,
+    opts.hardFacets,
+  );
 
   let recallParse = parse;
   if (parse.like_brands.length) {
@@ -310,7 +357,7 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
       return null;
     }),
     structuredSearch(env, {
-      parse: recallParse,
+      parse: filterParse,
       sort: sort === 'relevance' ? 'popular' : sort,
       limit: CANDIDATE_POOL,
       brandId: opts.brandId,
@@ -353,7 +400,7 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   // --- hard filters --------------------------------------------------------
   const filtered = applyFilters(
     candidates.map((c) => c.row),
-    parse,
+    filterParse,
   );
   const keptIds = new Set(filtered.kept.map((p) => p.id));
   const surviving = candidates.filter((c) => keptIds.has(c.row.id));
@@ -392,11 +439,13 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   const offset = (page - 1) * perPage;
   const items = scored.slice(offset, offset + perPage);
 
-  const relaxations = total === 0 ? buildRelaxations(parse, opts.query, filtered.binding) : [];
+  const relaxations =
+    total === 0 ? buildRelaxations(filterParse, opts.query, filtered.binding) : [];
 
   return {
     query: opts.query,
     parse,
+    filter_parse: filterParse,
     items,
     facets,
     total,

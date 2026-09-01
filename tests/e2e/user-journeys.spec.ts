@@ -43,6 +43,18 @@ test('search submits with Enter before or without client JavaScript', async ({ b
   }
 });
 
+test('natural Goa dinner prompt returns budget-safe recommendations', async ({ page }) => {
+  const prompt = 'I need a breathable dinner outfit for Goa under ₹5000.';
+  await page.goto(`/search?q=${encodeURIComponent(prompt)}`);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(prompt);
+  await expect(page.locator('#results .card').first()).toBeVisible();
+  const prices = await page.locator('#results .card-price .now').allTextContents();
+  expect(prices.length).toBeGreaterThan(0);
+  for (const price of prices) {
+    expect(Number(price.replace(/[^\d]/g, ''))).toBeLessThanOrEqual(5000);
+  }
+});
+
 test('shopper can search, filter, sort, save, inspect, and remove a piece', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/');

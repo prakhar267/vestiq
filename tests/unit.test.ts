@@ -47,7 +47,8 @@ import { normaliseItem, contentHash, embedText } from '../src/ingest/normalize';
 import { computeFacets, priceBandRange } from '../src/search/facets';
 import { toParsedQuery } from '../src/ai/provider';
 import { rateIdentity, rateLimit, RULES } from '../src/lib/ratelimit';
-import { applyUrlFilters, validatedSearchParams } from '../src/routes/pages';
+import { applyUrlFilters, explicitHardFacets, validatedSearchParams } from '../src/routes/pages';
+import { constraintParseForSearch } from '../src/search';
 import { drainStylistBuffer } from '../src/routes/api';
 import { filterRail, pagination, sortSelect } from '../src/ui/components';
 import { configurationReadiness } from '../src/lib/readiness';
@@ -592,6 +593,56 @@ describe('applyFilters', () => {
       colors: ['blue', 'red'],
     });
     expect(result.kept.map((p) => p.id)).toEqual(['cotton-blue', 'linen-red']);
+  });
+});
+
+describe('natural-language hard constraints', () => {
+  const prompt = 'I need a breathable dinner outfit for Goa under ₹5000.';
+  const modelParse: ParsedQuery = {
+    ...heuristicParse(prompt),
+    materials: ['cotton', 'linen', 'knit'],
+    occasions: ['dinner', 'vacation'],
+    style_tags: ['breathable'],
+    provider: 'workers-ai',
+  };
+
+  it('keeps inferred benefits and occasions soft while enforcing the budget', () => {
+    const constraints = constraintParseForSearch(prompt, modelParse, 'natural-language');
+    expect(constraints.price_max).toBe(500_000);
+    expect(constraints.materials).toEqual([]);
+    expect(constraints.occasions).toEqual([]);
+    expect(constraints.style_tags).toEqual([]);
+  });
+
+  it('keeps concrete colours and fabrics typed by the shopper hard', () => {
+    const query = 'red cotton dress for dinner';
+    const parse = heuristicParse(query);
+    const constraints = constraintParseForSearch(query, parse, 'natural-language');
+    expect(constraints.categories).toEqual(['dresses']);
+    expect(constraints.colors).toEqual(['red']);
+    expect(constraints.materials).toEqual(['cotton']);
+    expect(constraints.occasions).toEqual([]);
+  });
+
+  it('makes explicit filter-form facets hard, including cleared groups', () => {
+    const params = new URLSearchParams('q=x&filters=1&material=linen');
+    expect(explicitHardFacets(params)).toEqual([
+      'colors',
+      'materials',
+      'occasions',
+      'style_tags',
+    ]);
+    const filtered = applyUrlFilters(modelParse, params);
+    const constraints = constraintParseForSearch(
+      prompt,
+      filtered,
+      'natural-language',
+      explicitHardFacets(params),
+    );
+    expect(constraints.colors).toEqual([]);
+    expect(constraints.materials).toEqual(['linen']);
+    expect(constraints.occasions).toEqual([]);
+    expect(constraints.style_tags).toEqual([]);
   });
 });
 

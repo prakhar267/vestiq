@@ -15,7 +15,7 @@ import {
   label,
 } from '../ai/lexicon';
 import { heuristicParse } from '../ai/heuristic';
-import { search, trendingQueries } from '../search';
+import { search, trendingQueries, type SearchHardFacet } from '../search';
 import { priceBandRange } from '../search/facets';
 import { ICONS, layout, searchBarShell } from '../ui/layout';
 import {
@@ -152,6 +152,17 @@ export function validatedSort(params: URLSearchParams): SortKey {
   return value && SORTS.includes(value) ? value : 'relevance';
 }
 
+/** Attribute facets are soft in prose but hard after an explicit filter action. */
+export function explicitHardFacets(params: URLSearchParams): SearchHardFacet[] {
+  const filterForm = params.get('filters') === '1';
+  const out: SearchHardFacet[] = [];
+  if (filterForm || params.has('color')) out.push('colors');
+  if (filterForm || params.has('material')) out.push('materials');
+  if (filterForm || params.has('occasion')) out.push('occasions');
+  if (filterForm || params.has('style')) out.push('style_tags');
+  return out;
+}
+
 /** Which products this owner has already saved, so hearts render filled. */
 async function savedIds(env: Env, owner: string, ids: string[]): Promise<Set<string>> {
   if (!ids.length) return new Set();
@@ -203,7 +214,7 @@ export function applyUrlFilters(parse: ParsedQuery, params: URLSearchParams): Pa
   if (occasions.length || filterForm) out.occasions = occasions;
 
   const styles = clean.getAll('style');
-  if (styles.length) out.style_tags = styles;
+  if (styles.length || filterForm) out.style_tags = styles;
 
   const sizes = clean.getAll('size');
   if (sizes.length || filterForm) out.sizes = sizes;
@@ -444,6 +455,8 @@ pageRoutes.get('/search', async (c) => {
     session: app.session,
     includeScoreParts: params.get('debug') === '1',
     degradedHints: degraded,
+    filterMode: 'natural-language',
+    hardFacets: explicitHardFacets(params),
   });
 
   const { recordSearch } = await import('../search');
@@ -513,7 +526,7 @@ ${
     ? emptyState(response)
     : `<div class="wrap">
       <div class="layout-with-rail">
-        ${filterRail(response.facets, query, params, response.parse)}
+        ${filterRail(response.facets, query, params, response.filter_parse)}
         <div>
           ${refineRail(response.parse, query)}
           <div id="results" data-query="${esc(query)}" data-page="${page}" data-total="${response.total}">

@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { env, migrate, seedBrand, seedProduct } from './helpers';
 import { sha256Hex } from '../src/lib/util';
 import { resolveReferenceProfile } from '../src/search';
+import type { ParsedQuery } from '../src/types';
 
 const ADMIN_TOKEN = 'test-admin-token-at-least-16-chars';
 
@@ -380,6 +381,21 @@ describe('GET /api/search', () => {
     const body = await res.json<{ html: string; has_more: boolean }>();
     expect(body.html).toContain('class="grid"');
     expect(typeof body.has_more).toBe('boolean');
+  });
+
+  it('treats Goa dinner and breathable as preferences while enforcing ₹5000', async () => {
+    const query = 'I need a breathable dinner outfit for Goa under ₹5000.';
+    const res = await SELF.fetch(`http://localhost/api/search?q=${encodeURIComponent(query)}`);
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      total: number;
+      parse: ParsedQuery;
+      items: { price: number }[];
+    }>();
+    expect(body.total).toBeGreaterThan(0);
+    expect(body.parse.occasions).toEqual(expect.arrayContaining(['dinner', 'vacation']));
+    expect(body.parse.style_tags).toContain('breathable');
+    expect(body.items.every((item) => item.price <= 500_000)).toBe(true);
   });
 });
 

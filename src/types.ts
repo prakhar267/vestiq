@@ -162,6 +162,8 @@ export interface Facets {
 export interface SearchResponse {
   query: string;
   parse: ParsedQuery;
+  /** The subset enforced as hard constraints; other parsed attributes rank softly. */
+  filter_parse: ParsedQuery;
   items: ResultItem[];
   facets: Facets;
   total: number;
