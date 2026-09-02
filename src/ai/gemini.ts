@@ -3,8 +3,12 @@ import type { AiProvider, ChatMessage, EmbedModel } from './provider';
 import { EMBED_MODELS, PARSE_SYSTEM_PROMPT, toParsedQuery } from './provider';
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const TEXT_MODEL = 'gemini-2.5-flash';
-const VISION_MODEL = 'gemini-2.5-flash';
+// Keep text, chat, and vision on a stable multimodal endpoint. The retired
+// gemini-2.5-flash model returns 404 for newer API consumers, which previously
+// left image search dependent on the much smaller daily Workers AI allowance.
+const GENERATIVE_MODEL = 'gemini-3.6-flash';
+const TEXT_MODEL = GENERATIVE_MODEL;
+const VISION_MODEL = GENERATIVE_MODEL;
 
 /** Gemini's responseSchema dialect (an OpenAPI 3 subset). */
 const PARSE_SCHEMA = {
