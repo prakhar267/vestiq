@@ -2335,6 +2335,9 @@ const TOPS = new Set(['tops', 'shirts', 'tshirts', 'kurtas', 'blouses', 'sweater
 const BOTTOMS = new Set(['skirts', 'trousers', 'jeans', 'shorts']);
 
 function outfitSlots(baseCategories: string[], hasSeed: boolean): LookSlot[] {
+  // A generic "outfit" is better served by real separates than by guessing a
+  // dress. This also lets fabric/occasion constraints shape both garments.
+  if (!hasSeed && !baseCategories.length) return genericSeparatesSlots();
   const base = baseCategories[0] ?? 'dresses';
   if (hasSeed) {
     const complements = COMPLEMENTS[base] ?? ['heels', 'bags', 'jewellery'];
@@ -2461,6 +2464,10 @@ async function buildBudgetedLook(
     for (let rank = 0; rank < group.items.length; rank++) {
       const item = group.items[rank];
       if (chosen.has(item.id)) continue;
+      const selectedGender = [...fixed, ...selections]
+        .map((selection) => selection.item.gender)
+        .find((gender) => gender !== 'unisex');
+      if (item.gender !== 'unisex' && selectedGender && item.gender !== selectedGender) continue;
       chosen.add(item.id);
       selections.push({ slot: group.slot.slot, item });
       visit(index + 1, selections, total + item.price, rankScore + (group.items.length - rank) / group.items.length);
