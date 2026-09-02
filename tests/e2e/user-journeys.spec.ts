@@ -172,9 +172,11 @@ test('shopper can save a standing search, tune taste, follow a brand, and build 
 });
 
 test('generic outfit requests fall back to a genuine top-and-bottom look', async ({ page }) => {
-  await page.goto('/look-builder');
-  await page.getByLabel('Occasion, mood and constraints').fill('breathable dinner outfit for men');
-  await page.getByLabel('Total budget in ₹').fill('5000');
+  await page.goto('/look-builder?q=breathable%20dinner%20outfit%20for%20men%20under%20%E2%82%B95000');
+  await expect(page.getByLabel('Occasion, mood and constraints')).toHaveValue(
+    'breathable dinner outfit for men under ₹5000',
+  );
+  await expect(page.getByLabel('Total budget in ₹')).toHaveValue('5000');
   await page.getByRole('button', { name: 'Build my look' }).click();
 
   await expect(page).toHaveURL(/\/looks\/lk_/);

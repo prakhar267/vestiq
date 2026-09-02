@@ -1597,6 +1597,11 @@ pageRoutes.get('/stylist', async (c) => {
 
 pageRoutes.get('/look-builder', async (c) => {
   const seedId = (c.req.query('seed') ?? '').slice(0, 40);
+  const prompt = (c.req.query('q') ?? '').slice(0, 300);
+  const requestedBudget = heuristicParse(prompt).price_max;
+  const budgetRupees = requestedBudget
+    ? Math.min(1_000_000, Math.max(500, Math.round(requestedBudget / 100)))
+    : 10_000;
   const seed = seedId
     ? await c.env.DB.prepare(
         `SELECT p.title, b.name AS brand_name FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
@@ -1624,9 +1629,9 @@ pageRoutes.get('/look-builder', async (c) => {
         <form method="POST" action="/look-builder" style="margin-top:var(--s5)">
           ${seedId ? `<input type="hidden" name="seed" value="${esc(seedId)}">` : ''}
           <label class="field"><span>Occasion, mood and constraints</span>
-            <textarea name="prompt" required maxlength="300" placeholder="Outdoor mehendi, breathable, not too traditional">${esc(c.req.query('q') ?? '')}</textarea></label>
+            <textarea name="prompt" required maxlength="300" placeholder="Outdoor mehendi, breathable, not too traditional">${esc(prompt)}</textarea></label>
           <label class="field"><span>Total budget in ₹</span>
-            <input type="number" name="budget" min="500" max="1000000" step="100" value="10000" required></label>
+            <input type="number" name="budget" min="500" max="1000000" step="100" value="${budgetRupees}" required></label>
           <button class="btn btn-primary" type="submit">Build my look</button>
         </form>
       </section></div>`,
