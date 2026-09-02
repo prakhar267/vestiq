@@ -124,6 +124,7 @@ Return the corrected, complete JSON.`;
         generationConfig: {
           temperature: 0.1,
           maxOutputTokens: 800,
+          thinkingConfig: { thinkingLevel: 'minimal' },
           responseMimeType: 'application/json',
           responseSchema: PARSE_SCHEMA,
         },
@@ -187,6 +188,10 @@ Return the corrected, complete JSON.`;
         generationConfig: {
           temperature: 0.1,
           maxOutputTokens: 800,
+          // Vision here is classification, not open-ended reasoning. Gemini 3
+          // defaults to medium thinking, which can exceed an interactive
+          // request's deadline before returning the compact JSON we need.
+          thinkingConfig: { thinkingLevel: 'minimal' },
           responseMimeType: 'application/json',
           responseSchema: PARSE_SCHEMA,
         },
@@ -213,7 +218,11 @@ Return the corrected, complete JSON.`;
         body: JSON.stringify({
           ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
           contents,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 900 },
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 900,
+            thinkingConfig: { thinkingLevel: 'low' },
+          },
         }),
         signal,
       });
