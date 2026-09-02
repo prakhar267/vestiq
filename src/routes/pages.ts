@@ -2404,9 +2404,10 @@ async function buildBudgetedLook(
   session: AppContext['session'],
   seedId?: string,
   slotOverride?: LookSlot[],
+  parseOverride?: ParsedQuery,
 ): Promise<{ items: LookSelection[]; total: number }> {
   const { parseQueryCached } = await import('../search');
-  const parse = await parseQueryCached(env, prompt, () => undefined);
+  const parse = parseOverride ?? await parseQueryCached(env, prompt, () => undefined);
   let seed: ResultItem | null = null;
   if (seedId) {
     const row = await env.DB.prepare(
@@ -2458,7 +2459,7 @@ async function buildBudgetedLook(
       // genuine separates outfit before declaring failure: a required top and
       // bottom, then optional footwear and an accessory.
       if (!seed && !slotOverride && !baseCategories.length) {
-        return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots());
+        return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots(), parse);
       }
       return { items: [], total: 0 };
     }
@@ -2501,7 +2502,7 @@ async function buildBudgetedLook(
 
   visit(0, [], seed?.price ?? 0, 0);
   if (!best.length && !seed && !slotOverride && !baseCategories.length) {
-    return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots());
+    return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots(), parse);
   }
   return { items: best, total: best.reduce((sum, selection) => sum + selection.item.price, 0) };
 }
@@ -2548,7 +2549,19 @@ async function buildTripPlan(
       .join('. ')
       .slice(0, 300);
 
-    let built = await buildBudgetedLook(env, prompt, dayBudget, input.session);
+    // Destination, occasion and notes are already structured planner fields.
+    // The deterministic parser extracts their catalogue facets immediately;
+    // asking an LLM to rediscover that structure once per day made this path
+    // several network round-trips slower without improving the result.
+    let built = await buildBudgetedLook(
+      env,
+      prompt,
+      dayBudget,
+      input.session,
+      undefined,
+      undefined,
+      heuristicParse(prompt),
+    );
     let items = built.items.filter((selection) => !used.has(selection.item.id));
     let total = items.reduce((sum, selection) => sum + selection.item.price, 0);
 
