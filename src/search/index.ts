@@ -30,6 +30,7 @@ import {
  */
 export const CANDIDATE_POOL = 400;
 const PARSE_CACHE_TTL = 7 * 24 * 60 * 60; // 7 days (ADR-6)
+const QUERY_VECTOR_CACHE_TTL = 7 * 24 * 60 * 60;
 /**
  * Bump this whenever parser behaviour or validation changes.
  *
@@ -67,9 +68,41 @@ export interface SearchOptions {
   filterMode?: 'natural-language' | 'strict';
   /** Facets explicitly selected in the filter UI must remain hard constraints. */
   hardFacets?: SearchHardFacet[];
+  /**
+   * Outfit slots already provide exact categories and do not need a remote
+   * semantic embedding. Keeping this opt-out explicit prevents accidental
+   * latency regressions in multi-search features.
+   */
+  semanticRecall?: boolean;
+  /** Optional vector started by the page route in parallel with AI parsing. */
+  queryVector?: Int8Array | null;
 }
 
 export type SearchHardFacet = 'colors' | 'materials' | 'occasions' | 'style_tags';
+
+/**
+ * Short, literal searches are handled more accurately by the deterministic
+ * parser than by paying for a model round-trip. Longer subjective requests
+ * still use AI parsing so nuance is preserved.
+ */
+export function canUseDeterministicParse(query: string, seed: ParsedQuery): boolean {
+  const tokens = normaliseQuery(query).split(' ').filter(Boolean);
+  if (tokens.length <= 1) return true;
+  if (tokens.length > 3) return false;
+  return Boolean(
+    seed.categories.length ||
+      seed.colors.length ||
+      seed.materials.length ||
+      seed.brands.length ||
+      seed.like_brands.length ||
+      seed.sizes.length ||
+      seed.gender ||
+      seed.price_min !== undefined ||
+      seed.price_max !== undefined ||
+      seed.exclude_colors.length ||
+      seed.exclude_terms.length,
+  );
+}
 
 /**
  * Build the parse used for hard filtering and structured recall.
@@ -183,6 +216,11 @@ export async function parseQueryCached(
   const normalised = normaliseQuery(query);
   if (!normalised) return heuristicParse(query);
 
+  const deterministic = heuristicParse(query);
+  if (canUseDeterministicParse(query, deterministic)) {
+    return { ...deterministic, provider: 'deterministic' };
+  }
+
   const hash = await sha256Hex(normalised);
   const key = `parse:${PARSE_CACHE_VERSION}:${hash}`;
 
@@ -230,7 +268,7 @@ export async function parseQueryCached(
 
 /** Embed the query for the semantic arm, but only if the live index speaks the
  *  same embedding language (ADR-5: vectors are not portable across providers). */
-async function embedForActiveIndex(
+export async function embedForActiveIndex(
   env: Env,
   text: string,
   onDegrade: (m: string) => void,
@@ -249,9 +287,26 @@ async function embedForActiveIndex(
     return null;
   }
 
+  // Query embeddings are deterministic within an index version. Reusing the
+  // quantised vector removes the slowest network call from repeated searches
+  // without caching inventory, prices, availability, or user-specific ranking.
+  const vectorKey = `queryvec:v${activeVersion}:${await sha256Hex(normaliseQuery(text))}`;
+  try {
+    const cached = await env.CACHE.get(vectorKey, 'arrayBuffer');
+    if (cached?.byteLength === provider.embedModel.dim) return new Int8Array(cached);
+  } catch {
+    // A cache miss or outage should only cost latency, never availability.
+  }
+
   const out = await ai.embed([text]);
   if (!out || !out.vectors[0]) return null;
-  return quantise(out.vectors[0]);
+  const vector = quantise(out.vectors[0]);
+  try {
+    await env.CACHE.put(vectorKey, vector, { expirationTtl: QUERY_VECTOR_CACHE_TTL });
+  } catch {
+    // Non-fatal: the current request can still use the fresh vector.
+  }
+  return vector;
 }
 
 /** Hydrate candidate ids into full rows with their brand fields, preserving nothing
@@ -273,8 +328,9 @@ async function hydrate(
 
   // D1 caps bound parameters per statement; chunk defensively.
   const CHUNK = 100;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const slice = ids.slice(i, i + CHUNK);
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+  const hydrated = await Promise.all(chunks.map(async (slice) => {
     const sql = `
       SELECT ${PRODUCT_COLUMNS}
       FROM ${T.products} p
@@ -283,9 +339,11 @@ async function hydrate(
         AND p.status = 'active'
         AND b.status = 'active'
     `;
-    const res = await env.DB.prepare(sql)
+    return env.DB.prepare(sql)
       .bind(...slice)
       .all<Record<string, unknown>>();
+  }));
+  for (const res of hydrated) {
     for (const row of res.results ?? []) {
       out.set(String(row.id), {
         ...rowToProduct(row),
@@ -352,10 +410,14 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
       onDegrade('lexical');
       return [];
     }),
-    embedForActiveIndex(env, recallParse.semantic_text || opts.query, onDegrade).catch(() => {
-      onDegrade('embed');
-      return null;
-    }),
+    opts.semanticRecall === false
+      ? Promise.resolve(null)
+      : opts.queryVector !== undefined
+        ? Promise.resolve(opts.queryVector)
+        : embedForActiveIndex(env, recallParse.semantic_text || opts.query, onDegrade).catch(() => {
+            onDegrade('embed');
+            return null;
+          }),
     structuredSearch(env, {
       parse: filterParse,
       sort: sort === 'relevance' ? 'popular' : sort,

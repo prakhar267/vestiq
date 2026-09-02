@@ -50,7 +50,7 @@ import { computeFacets, priceBandRange } from '../src/search/facets';
 import { toParsedQuery } from '../src/ai/provider';
 import { rateIdentity, rateLimit, RULES } from '../src/lib/ratelimit';
 import { applyUrlFilters, explicitHardFacets, validatedSearchParams } from '../src/routes/pages';
-import { constraintParseForSearch } from '../src/search';
+import { canUseDeterministicParse, constraintParseForSearch } from '../src/search';
 import { drainStylistBuffer } from '../src/routes/api';
 import { filterRail, pagination, sortSelect } from '../src/ui/components';
 import { configurationReadiness } from '../src/lib/readiness';
@@ -429,6 +429,23 @@ describe('AI capability ordering', () => {
       'other',
     ]);
     expect(providers.map((provider) => provider.name)).toEqual(['gemini', 'workers-ai', 'other']);
+  });
+});
+
+describe('search latency fast path', () => {
+  it('keeps one-word and short literal catalogue searches off the AI parse path', () => {
+    expect(canUseDeterministicParse('outdoor', heuristicParse('outdoor'))).toBe(true);
+    expect(
+      canUseDeterministicParse(
+        'white linen shirt',
+        heuristicParse('white linen shirt'),
+      ),
+    ).toBe(true);
+  });
+
+  it('preserves AI parsing for longer conversational requests', () => {
+    const prompt = 'I need a breathable dinner outfit for Goa under ₹5000';
+    expect(canUseDeterministicParse(prompt, heuristicParse(prompt))).toBe(false);
   });
 });
 

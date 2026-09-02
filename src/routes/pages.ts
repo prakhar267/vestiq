@@ -16,7 +16,7 @@ import {
   label,
 } from '../ai/lexicon';
 import { heuristicParse } from '../ai/heuristic';
-import { search, trendingQueries, type SearchHardFacet } from '../search';
+import { canUseDeterministicParse, search, trendingQueries, type SearchHardFacet } from '../search';
 import { priceBandRange } from '../search/facets';
 import { ICONS, layout, searchBarShell } from '../ui/layout';
 import {
@@ -492,10 +492,18 @@ pageRoutes.get('/search', async (c) => {
   const page = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
   const sort = validatedSort(params);
 
-  // Parse, then let explicit URL filters override the model.
-  const { parseQueryCached } = await import('../search');
+  // Parsing and semantic embedding are independent remote operations. Starting
+  // them together removes a full network round-trip from first-time searches.
+  const { embedForActiveIndex, parseQueryCached } = await import('../search');
   const degraded: string[] = [];
-  const baseParse = await parseQueryCached(env, query, (m) => degraded.push(m));
+  const noteDegraded = (message: string) => {
+    if (!degraded.includes(message)) degraded.push(message);
+  };
+  const literalFastPath = canUseDeterministicParse(query, heuristicParse(query));
+  const [baseParse, queryVector] = await Promise.all([
+    parseQueryCached(env, query, noteDegraded),
+    literalFastPath ? Promise.resolve(null) : embedForActiveIndex(env, query, noteDegraded),
+  ]);
   const parse = applyUrlFilters(baseParse, params);
 
   const response = await search(env, {
@@ -509,17 +517,20 @@ pageRoutes.get('/search', async (c) => {
     degradedHints: degraded,
     filterMode: 'natural-language',
     hardFacets: explicitHardFacets(params),
+    queryVector,
   });
 
   const { recordSearch } = await import('../search');
   c.executionCtx.waitUntil(recordSearch(env, response, app.session));
 
-  const queryHash = await sha256Hex(normaliseQuery(query));
-  const saved = await savedIds(
-    env,
-    ownerKey(app.session),
-    response.items.map((i) => i.id),
-  );
+  const [queryHash, saved] = await Promise.all([
+    sha256Hex(normaliseQuery(query)),
+    savedIds(
+      env,
+      ownerKey(app.session),
+      response.items.map((i) => i.id),
+    ),
+  ]);
 
   const searchState = new URLSearchParams(params);
   searchState.delete('page');
@@ -2410,8 +2421,10 @@ async function buildBudgetedLook(
 
   const baseCategories = seed ? [seed.category] : parse.categories;
   const slots = slotOverride ?? outfitSlots(baseCategories, Boolean(seed));
-  const candidateGroups: Array<{ slot: LookSlot; items: ResultItem[] }> = [];
-  for (const slot of slots) {
+  // Slot searches are independent. Running them together keeps a four-piece
+  // request near the latency of one catalogue lookup rather than four, and the
+  // explicit slot categories make a remote semantic embedding unnecessary.
+  const candidateGroups = await Promise.all(slots.map(async (slot) => {
     const stylingPiece = slot.slot === 'footwear' || slot.slot === 'accessory';
     const slotParse: ParsedQuery = {
       ...parse,
@@ -2433,9 +2446,14 @@ async function buildBudgetedLook(
       perPage: 10,
       session,
       filterMode: 'natural-language',
+      semanticRecall: false,
     });
     const items = response.items.filter((item) => item.id !== seed?.id && item.price <= budget).slice(0, 10);
-    if (slot.required && !items.length) {
+    return { slot, items };
+  }));
+
+  for (const group of candidateGroups) {
+    if (group.slot.required && !group.items.length) {
       // Generic outfit prompts frequently have no single-piece category. Try a
       // genuine separates outfit before declaring failure: a required top and
       // bottom, then optional footwear and an accessory.
@@ -2444,7 +2462,6 @@ async function buildBudgetedLook(
       }
       return { items: [], total: 0 };
     }
-    candidateGroups.push({ slot, items });
   }
 
   const fixed: LookSelection[] = seed ? [{ slot: 'foundation', item: seed }] : [];
