@@ -4,7 +4,7 @@ import { PRODUCT_COLUMNS, T, inClause, rowToBrand, rowToProduct } from '../lib/d
 import { esc, formatINR, newId, normaliseQuery, safeJson, sha256Hex, timeAgo, truncate } from '../lib/util';
 import { mergeOwner, ownerKey, saveSession } from '../lib/session';
 import { sendEmail } from '../lib/email';
-import { fitPrompt, hasFitProfile, loadShopperProfile, persistFitProfile, persistTasteProfile, sanitiseFitProfile } from '../lib/profile';
+import { hasFitProfile, loadShopperProfile, persistFitProfile, persistTasteProfile, sanitiseFitProfile } from '../lib/profile';
 import { rateIdentity, rateLimit } from '../lib/ratelimit';
 import {
   ALL_CATEGORIES,
@@ -1654,9 +1654,11 @@ pageRoutes.post('/look-builder', async (c) => {
     return c.text('Check the prompt and budget.', 400);
   }
 
-  const fit = fitPrompt(c.var.app.session.fit);
-  const searchPrompt = [prompt, fit].filter(Boolean).join('. ').slice(0, 300);
-  const built = await buildBudgetedLook(c.env, searchPrompt, Math.round(budgetRupees * 100), c.var.app.session, seedId || undefined);
+  // Fit is already applied as a bounded ranking signal through `session`.
+  // Appending it to the shopper's text made preferences such as "top size M"
+  // look like hard product constraints (and even an inferred `tops` category),
+  // which could collapse a broad request such as "outdoor" to zero pieces.
+  const built = await buildBudgetedLook(c.env, prompt, Math.round(budgetRupees * 100), c.var.app.session, seedId || undefined);
   if (!built.items.length) {
     return c.html(
       layout(
@@ -2520,12 +2522,10 @@ async function buildTripPlan(
     const day = index + 1;
     const labelText = input.occasions[index % Math.max(1, input.occasions.length)] ?? defaults[index % defaults.length];
     const dayBudget = Math.floor(remaining / (input.days - index));
-    const profile = fitPrompt(input.session.fit);
     const prompt = [
       `${labelText} in ${input.destination}`,
       'comfortable capsule piece that can be reworn',
       input.notes,
-      profile,
     ]
       .filter(Boolean)
       .join('. ')

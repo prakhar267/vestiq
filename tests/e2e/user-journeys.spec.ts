@@ -231,6 +231,26 @@ test('generic outfit requests fall back to a genuine top-and-bottom look', async
   await expectNoBlockingA11y(page);
 });
 
+test('saved fit preferences rank broad look requests without turning them into hard filters', async ({ page }) => {
+  await page.goto('/profile');
+  await page.getByLabel('Shop for').selectOption('women');
+  await page.getByLabel('Preferred fit').selectOption('relaxed');
+  await page.getByLabel('Usual top size').selectOption('m');
+  await page.getByRole('button', { name: 'Save fit profile' }).click();
+  await expect(page).toHaveURL(/\/profile\?saved=1/);
+
+  await page.goto('/look-builder?q=outdoor');
+  await expect(page.getByLabel('Occasion, mood and constraints')).toHaveValue('outdoor');
+  await page.getByRole('button', { name: 'Build my look' }).click();
+
+  await expect(page).toHaveURL(/\/looks\/lk_/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Look for outdoor');
+  await expect(page.locator('.look-grid .card')).toHaveCount(3);
+  await expect(page.locator('body')).toContainText('Linen Holiday Shirt');
+  await expect(page.locator('body')).toContainText('Coastal Linen Trousers');
+  await expectNoBlockingA11y(page);
+});
+
 test('shopper can save fit preferences and build a multi-day trip wardrobe', async ({ page }) => {
   await page.goto('/profile');
   await page.getByLabel('Shop for').selectOption('women');
