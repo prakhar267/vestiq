@@ -34,7 +34,9 @@ function execSql(sql) {
 }
 
 function execCommand(sql) {
-  return wrangler(['d1', 'execute', DB, flag, '--command', sql, '--json', '-y']);
+  // Bind the SQL with `=` so statements that begin with a `--` comment cannot
+  // be reinterpreted by Wrangler's argument parser as additional CLI flags.
+  return wrangler(['d1', 'execute', DB, flag, `--command=${sql}`, '--json', '-y']);
 }
 
 function parseRows(output) {
