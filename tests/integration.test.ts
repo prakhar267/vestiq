@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { env, migrate, seedBrand, seedProduct } from './helpers';
 import { sha256Hex } from '../src/lib/util';
 import { resolveReferenceProfile } from '../src/search';
+import { upsertCatalog } from '../src/ingest/upsert';
 import type { ParsedQuery } from '../src/types';
 
 const ADMIN_TOKEN = 'test-admin-token-at-least-16-chars';
@@ -65,6 +66,42 @@ describe('brand-reference profile', () => {
     expect(profile?.categories).toContain('kurta-sets');
     expect(profile?.materials).toContain('cotton');
     expect(profile?.text).toContain('Kaanchi');
+  });
+});
+
+describe('partial catalogue snapshots', () => {
+  it('does not falsely mark products outside a bounded snapshot as sold out', async () => {
+    const partialBrand = await seedBrand({
+      id: 'b_partial_snapshot',
+      name: 'Partial Snapshot',
+      slug: 'partial-snapshot',
+    });
+    const existingId = await seedProduct(partialBrand, {
+      id: 'p_partial_existing',
+      title: 'Existing Cotton Shirt',
+      category: 'shirts',
+      availability: 'in_stock',
+    });
+    const snapshot = [{
+      external_id: 'snapshot-new',
+      title: 'Snapshot Linen Shirt',
+      product_type: 'Shirt',
+      price_rupees: 1499,
+      url: 'https://partial-snapshot.fashion/products/snapshot-linen-shirt',
+      image_url: 'https://partial-snapshot.fashion/images/snapshot-linen-shirt.jpg',
+      availability: 'in_stock',
+    }];
+
+    await upsertCatalog(
+      env,
+      { id: partialBrand, name: 'Partial Snapshot' },
+      snapshot,
+      { markVanished: false },
+    );
+    const existing = await env.DB.prepare(
+      'SELECT availability FROM vestiq_products WHERE id = ?',
+    ).bind(existingId).first<{ availability: string }>();
+    expect(existing?.availability).toBe('in_stock');
   });
 });
 

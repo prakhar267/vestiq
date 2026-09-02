@@ -70,13 +70,13 @@ marked indexable at ≥12 genuinely matching items.
 
 ## Architecture
 
-One Cloudflare Worker. No client framework — **4.9 KB of JS and 4.9 KB of CSS**,
+One Cloudflare Worker. No client framework — **5.0 KB of JS and 6.3 KB of CSS**,
 against budgets of 24 KB and 14 KB enforced in CI. On a discovery product the
 first paint *is* the pitch, so a hydration bundle would cost more conversions than
 any interaction it buys.
 
 ```
-Browser ─► Worker (Hono) ─┬─► D1      22 product tables + FTS5
+Browser ─► Worker (Hono) ─┬─► D1      25 product tables + FTS5
                           ├─► KV      cache · vectors · sessions
                           ├─► Workers AI   parse · embed · vision · chat
                           └─► Gemini       optional upgrade
@@ -118,6 +118,9 @@ node scripts/migrate.mjs --local
 
 The repository does not ship an invented catalogue. Onboard a real brand through
 `/merchant/signup`, approve it in `/admin/brands`, then run its feed sync.
+The managed Souled Store source uses a bounded, category-diverse men-and-women
+snapshot and labels itself as partial so products outside that window are never
+falsely marked sold out.
 
 Deploy and operate: [`docs/07-deployment.md`](docs/07-deployment.md) ·
 [`docs/06-runbook.md`](docs/06-runbook.md)

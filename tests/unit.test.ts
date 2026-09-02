@@ -43,6 +43,7 @@ import {
   SHOPIFY_PAGE_SIZE,
   SOULED_STORE_API,
   SOULED_STORE_PAGE_SIZE,
+  SOULED_STORE_SNAPSHOT_PAGES_PER_GENDER,
 } from '../src/ingest/adapters';
 import { normaliseItem, contentHash, embedText } from '../src/ingest/normalize';
 import { computeFacets, priceBandRange } from '../src/search/facets';
@@ -1172,6 +1173,10 @@ describe('The Souled Store collection adapter', () => {
     splPrice: id === 1 ? 1299 : 0,
     images: [`item-${id}.jpg`],
     productSlug: `harry-potter-tee-${id}`,
+    variants: [
+      { id: `${id}-m`, attributes: [{ name: 'size', value: 'M' }, { name: 'color', value: 'Navy' }] },
+      { id: `${id}-l`, attributes: [{ name: 'size', value: 'L' }] },
+    ],
   });
 
   it('maps public price, stock, image and destination without using the member-only price', () => {
@@ -1190,6 +1195,8 @@ describe('The Souled Store collection adapter', () => {
       url: 'https://www.thesouledstore.com/product/harry-potter-tee-1?gte=1',
       image_url:
         'https://prod-img.thesouledstore.com/public/theSoul/uploads/catalog/product/item-1.jpg',
+      sizes: ['M', 'L'],
+      colors: ['Navy'],
     });
     expect(parsed.items[1].availability).toBe('out_of_stock');
     const normalised = normaliseItem(parsed.items[0]);
@@ -1212,6 +1219,7 @@ describe('The Souled Store collection adapter', () => {
         'souled_store',
       );
       expect(result.items.map((item) => item.external_id)).toEqual(['1', '2']);
+      expect(result.complete).toBe(true);
       expect(requests).toHaveLength(2);
       expect(requests.every((request) => request.url === SOULED_STORE_API)).toBe(true);
       expect(requests.every((request) => request.redirect === 'manual')).toBe(true);
@@ -1222,13 +1230,38 @@ describe('The Souled Store collection adapter', () => {
     }
   });
 
-  it('only accepts a real Souled Store artist collection URL', async () => {
+  it('builds a bounded men-and-women storefront snapshot without claiming completeness', async () => {
+    const requests: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const request = JSON.parse(String(init?.body ?? '{}')) as { query: string };
+      requests.push(request.query);
+      const page = Number(/page:\s*(\d+)/.exec(request.query)?.[1] ?? 1);
+      const gender = Number(/gender:\s*(\d+)/.exec(request.query)?.[1] ?? 1);
+      return new Response(listing(page, 99, [
+        { ...product(gender * 100 + page), genderType: gender },
+      ]));
+    });
+
+    try {
+      const result = await fetchFeed('https://www.thesouledstore.com/', 'souled_store');
+      expect(result.complete).toBe(false);
+      expect(result.items).toHaveLength(SOULED_STORE_SNAPSHOT_PAGES_PER_GENDER * 2);
+      expect(requests).toHaveLength(SOULED_STORE_SNAPSHOT_PAGES_PER_GENDER * 2);
+      expect(requests.some((query) => query.includes('gender: 1'))).toBe(true);
+      expect(requests.some((query) => query.includes('gender: 2'))).toBe(true);
+      expect(requests.every((query) => query.includes('variants { id attributes { name value } }'))).toBe(true);
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('only accepts a real Souled Store catalogue URL', async () => {
     await expect(
       fetchFeed('https://example.com/artists/harry-potter-official-merchandise', 'souled_store'),
     ).rejects.toThrow('must use thesouledstore.com');
     await expect(
       fetchFeed('https://www.thesouledstore.com/product/not-a-collection', 'souled_store'),
-    ).rejects.toThrow('must be an /artists/:slug collection URL');
+    ).rejects.toThrow('must be the storefront');
   });
 });
 

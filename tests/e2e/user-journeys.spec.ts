@@ -171,6 +171,20 @@ test('shopper can save a standing search, tune taste, follow a brand, and build 
   await expectNoBlockingA11y(page);
 });
 
+test('generic outfit requests fall back to a genuine top-and-bottom look', async ({ page }) => {
+  await page.goto('/look-builder');
+  await page.getByLabel('Occasion, mood and constraints').fill('breathable dinner outfit for men');
+  await page.getByLabel('Total budget in ₹').fill('5000');
+  await page.getByRole('button', { name: 'Build my look' }).click();
+
+  await expect(page).toHaveURL(/\/looks\/lk_/);
+  await expect(page.locator('.look-grid .card')).toHaveCount(3);
+  await expect(page.locator('body')).toContainText('Linen Holiday Shirt');
+  await expect(page.locator('body')).toContainText('Coastal Linen Trousers');
+  await expect(page.locator('body')).toContainText('₹4,597');
+  await expectNoBlockingA11y(page);
+});
+
 test('shopper can save fit preferences and build a multi-day trip wardrobe', async ({ page }) => {
   await page.goto('/profile');
   await page.getByLabel('Shop for').selectOption('women');

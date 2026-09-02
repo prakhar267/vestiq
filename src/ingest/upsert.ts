@@ -40,6 +40,7 @@ export async function upsertCatalog(
   env: Env,
   brand: { id: string; name: string },
   rawItems: RawItem[],
+  options: { markVanished?: boolean } = {},
 ): Promise<UpsertStats> {
   const stats: UpsertStats = {
     rows_in: rawItems.length,
@@ -189,17 +190,19 @@ export async function upsertCatalog(
   // --- items that vanished from the feed -----------------------------------
   // Soft-delist rather than delete: a feed that briefly truncates must not wipe
   // a catalogue, and saved/alerted products must keep resolving.
-  const feedIds = new Set(normalised.map((i) => i.external_id));
-  const vanished = [...existing.values()].filter(
-    (row) => !feedIds.has(row.external_id) && row.availability !== 'out_of_stock',
-  );
-  for (const batch of chunk(vanished, DB_BATCH)) {
-    statements.push(
-      env.DB.prepare(
-        `UPDATE ${T.products} SET availability = 'out_of_stock', updated_at = ?
-         WHERE id IN (${batch.map(() => '?').join(',')})`,
-      ).bind(now, ...batch.map((b) => b.id)),
+  if (options.markVanished !== false) {
+    const feedIds = new Set(normalised.map((i) => i.external_id));
+    const vanished = [...existing.values()].filter(
+      (row) => !feedIds.has(row.external_id) && row.availability !== 'out_of_stock',
     );
+    for (const batch of chunk(vanished, DB_BATCH)) {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE ${T.products} SET availability = 'out_of_stock', updated_at = ?
+           WHERE id IN (${batch.map(() => '?').join(',')})`,
+        ).bind(now, ...batch.map((b) => b.id)),
+      );
+    }
   }
 
   // --- liveness refresh for unchanged rows ---------------------------------

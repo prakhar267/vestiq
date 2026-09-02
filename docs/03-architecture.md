@@ -212,7 +212,7 @@ Tests assert that legacy campaign rows cannot enter retrieval or ranking.
 ```
 merchant registers feed_url
    → cron:*/15 claims due job from vestiq_jobs
-   → adapter fetch  (shopify-json | google-merchant-xml | csv | authorised Souled Store collection)
+   → adapter fetch  (shopify-json | google-merchant-xml | csv | authorised Souled Store catalogue/collection)
    → normalise      (currency→paise, size/colour lexicon, category mapping)
    → validate       (required fields, price sanity, real non-reserved destination, image, dedupe)
    → upsert         (content hash short-circuits unchanged rows)

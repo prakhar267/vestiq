@@ -37,6 +37,7 @@ d1('migrations/0001_init.sql');
 d1('migrations/0002_free_launch_cleanup.sql');
 d1('migrations/0003_launch_integrity_and_retention.sql');
 d1('migrations/0005_profiles_trips_and_attribution.sql');
+d1('migrations/0006_souled_store_catalogue_expansion.sql');
 d1('tests/fixtures/e2e.sql');
 
 const worker = spawn(

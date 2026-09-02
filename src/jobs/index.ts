@@ -171,11 +171,12 @@ export async function runFeedSync(env: Env, merchantId: string, log: Logger): Pr
     .run();
 
   try {
-    const { items } = await fetchFeed(merchant.feed_url, merchant.feed_type as FeedType);
+    const { items, complete } = await fetchFeed(merchant.feed_url, merchant.feed_type as FeedType);
     const stats = await upsertCatalog(
       env,
       { id: merchant.brand_id, name: merchant.brand_name },
       items,
+      { markVanished: complete },
     );
 
     const status = stats.rows_rejected > stats.rows_upserted && stats.rows_upserted === 0 ? 'partial' : 'ok';
@@ -201,7 +202,12 @@ export async function runFeedSync(env: Env, merchantId: string, log: Logger): Pr
 
     if (stats.needs_embedding.length) await enqueueJob(env, 'embed', {});
 
-    log.info('feed sync ok', { brand: merchant.brand_name, ...stats, needs_embedding: stats.needs_embedding.length });
+    log.info('feed sync ok', {
+      brand: merchant.brand_name,
+      complete,
+      ...stats,
+      needs_embedding: stats.needs_embedding.length,
+    });
   } catch (err) {
     await env.DB.batch([
       env.DB.prepare(

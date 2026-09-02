@@ -2,6 +2,7 @@ import { env as rawEnv } from 'cloudflare:test';
 import initSql from '../migrations/0001_init.sql?raw';
 import launchSql from '../migrations/0003_launch_integrity_and_retention.sql?raw';
 import productExpansionSql from '../migrations/0005_profiles_trips_and_attribution.sql?raw';
+import catalogueExpansionSql from '../migrations/0006_souled_store_catalogue_expansion.sql?raw';
 import type { Env } from '../src/types';
 
 /**
@@ -76,7 +77,9 @@ let migrated = false;
 
 export async function migrate(): Promise<void> {
   if (migrated) return;
-  for (const statement of splitStatements(`${initSql}\n${launchSql}\n${productExpansionSql}`)) {
+  for (const statement of splitStatements(
+    `${initSql}\n${launchSql}\n${productExpansionSql}\n${catalogueExpansionSql}`,
+  )) {
     await env.DB.prepare(statement).run();
   }
   migrated = true;

@@ -1030,7 +1030,7 @@ pageRoutes.get('/sources', async (c) => {
       shopify: 'Shopify live feed',
       gmc: 'Google Merchant feed',
       csv: 'Merchant CSV feed',
-      souled_store: 'Authorised collection feed',
+      souled_store: 'Authorised live catalogue',
       authorised: 'Authorised catalogue',
     };
     return labels[String(value)] ?? 'Authorised catalogue';
@@ -1062,7 +1062,7 @@ pageRoutes.get('/sources', async (c) => {
         </article>`;
       }).join('') || '<p class="muted">No live merchant sources yet.</p>'}</div>
       <section class="section callout-panel"><div><p class="eyebrow">Merchant-ready</p><h2>Add another store without code.</h2>
-        <p class="muted">Shopify, Google Merchant XML, CSV and authorised collection feeds are supported.</p></div>
+        <p class="muted">Shopify, Google Merchant XML, CSV and authorised live catalogues are supported.</p></div>
         <a class="btn btn-primary" href="/merchant/signup">Connect a store</a></section></div>`,
     ),
   );
@@ -2358,6 +2358,15 @@ function outfitSlots(baseCategories: string[], hasSeed: boolean): LookSlot[] {
   return slots.slice(0, 4);
 }
 
+function genericSeparatesSlots(): LookSlot[] {
+  return [
+    { slot: 'top', categories: ['tops', 'shirts', 'tshirts', 'kurtas'], required: true },
+    { slot: 'bottom', categories: ['trousers', 'skirts', 'jeans', 'shorts'], required: true },
+    { slot: 'footwear', categories: ['heels', 'flats', 'sandals', 'sneakers'], required: false },
+    { slot: 'accessory', categories: ['bags', 'clutches', 'jewellery'], required: false },
+  ];
+}
+
 /**
  * Search each outfit slot, then evaluate the small Cartesian product to find a
  * coherent combination that stays under one total budget. This is a real total-
@@ -2369,6 +2378,7 @@ async function buildBudgetedLook(
   budget: number,
   session: AppContext['session'],
   seedId?: string,
+  slotOverride?: LookSlot[],
 ): Promise<{ items: LookSelection[]; total: number }> {
   const { parseQueryCached } = await import('../search');
   const parse = await parseQueryCached(env, prompt, () => undefined);
@@ -2385,13 +2395,18 @@ async function buildBudgetedLook(
   if (seed && seed.price > budget) return { items: [], total: 0 };
 
   const baseCategories = seed ? [seed.category] : parse.categories;
-  const slots = outfitSlots(baseCategories, Boolean(seed));
+  const slots = slotOverride ?? outfitSlots(baseCategories, Boolean(seed));
   const candidateGroups: Array<{ slot: LookSlot; items: ResultItem[] }> = [];
   for (const slot of slots) {
+    const stylingPiece = slot.slot === 'footwear' || slot.slot === 'accessory';
     const slotParse: ParsedQuery = {
       ...parse,
       semantic_text: `${parse.semantic_text || prompt}. ${slot.slot}: ${slot.categories.map(label).join(' or ')}`,
       categories: slot.categories,
+      // "Breathable linen" describes the clothes, not the shoes or bag. Keep
+      // the full prompt in semantic text so styling pieces still coordinate,
+      // but do not make clothing-only fabrics a hard requirement for them.
+      materials: stylingPiece ? [] : parse.materials,
       price_min: undefined,
       price_max: Math.min(parse.price_max ?? budget, budget - (seed?.price ?? 0)),
       // A reference brand is a style seed; an exact-brand constraint should not
@@ -2403,9 +2418,18 @@ async function buildBudgetedLook(
       parse: slotParse,
       perPage: 10,
       session,
+      filterMode: 'natural-language',
     });
     const items = response.items.filter((item) => item.id !== seed?.id && item.price <= budget).slice(0, 10);
-    if (slot.required && !items.length) return { items: [], total: 0 };
+    if (slot.required && !items.length) {
+      // Generic outfit prompts frequently have no single-piece category. Try a
+      // genuine separates outfit before declaring failure: a required top and
+      // bottom, then optional footwear and an accessory.
+      if (!seed && !slotOverride && !baseCategories.length) {
+        return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots());
+      }
+      return { items: [], total: 0 };
+    }
     candidateGroups.push({ slot, items });
   }
 
@@ -2441,6 +2465,9 @@ async function buildBudgetedLook(
   };
 
   visit(0, [], seed?.price ?? 0, 0);
+  if (!best.length && !seed && !slotOverride && !baseCategories.length) {
+    return buildBudgetedLook(env, prompt, budget, session, undefined, genericSeparatesSlots());
+  }
   return { items: best, total: best.reduce((sum, selection) => sum + selection.item.price, 0) };
 }
 

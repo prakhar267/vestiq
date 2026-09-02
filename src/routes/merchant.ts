@@ -388,7 +388,7 @@ merchantRoutes.get('/merchant/feed', async (c) => {
               ['shopify', 'Shopify products.json'],
               ['gmc', 'Google Merchant Center XML'],
               ['csv', 'CSV'],
-              ['souled_store', 'The Souled Store artist collection'],
+              ['souled_store', 'The Souled Store catalogue or artist collection'],
             ]
               .map(
                 ([v, l]) =>

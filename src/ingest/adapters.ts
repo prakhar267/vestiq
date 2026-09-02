@@ -27,16 +27,22 @@ export const SHOPIFY_MAX_PAGE_REQUESTS = Math.ceil(SHOPIFY_MAX_ITEMS / SHOPIFY_P
 export const SHOPIFY_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
- * The Souled Store's storefront requests its artist catalogues from this
- * read-only GraphQL endpoint. This adapter is deliberately collection-scoped:
- * a merchant supplies the public `/artists/:slug` URL and every returned item
- * must carry that exact artist slug.
+ * The Souled Store storefront requests catalogue listings from this read-only
+ * GraphQL endpoint. Artist URLs are imported completely and strictly checked;
+ * the top-level storefront uses a bounded men-and-women popularity snapshot.
  */
 export const SOULED_STORE_API = 'https://api.thesouledstore.com/api/v2/graphql';
 export const SOULED_STORE_PAGE_SIZE = 72;
 export const SOULED_STORE_MAX_PAGES = 20;
 export const SOULED_STORE_MAX_ITEMS = SOULED_STORE_PAGE_SIZE * SOULED_STORE_MAX_PAGES;
 export const SOULED_STORE_MAX_BYTES = 32 * 1024 * 1024;
+/**
+ * A whole-store feed is intentionally a diverse popularity snapshot rather
+ * than a claim that Vestiq mirrors every Souled Store SKU. Six pages for men
+ * and women yields up to 864 current products while keeping one sync inside the
+ * Worker and free-tier D1 budgets.
+ */
+export const SOULED_STORE_SNAPSHOT_PAGES_PER_GENDER = 6;
 
 /** Hostnames that must never be fetched, even though Workers can't reach most. */
 const BLOCKED_HOST = /^(localhost|.*\.local|.*\.internal|metadata\..*|169\.254\..*|10\..*|127\..*|192\.168\..*|172\.(1[6-9]|2\d|3[01])\..*|\[?::1\]?|0\.0\.0\.0)$/i;
@@ -303,6 +309,10 @@ interface SouledStoreProduct {
   splPrice?: number;
   images?: string[];
   productSlug?: string;
+  variants?: Array<{
+    id?: string | number;
+    attributes?: Array<{ name?: string; value?: string }>;
+  }>;
 }
 
 interface SouledStoreListingResponse {
@@ -315,7 +325,14 @@ interface SouledStoreListingResponse {
   };
 }
 
-function souledStoreCollection(raw: string): { artistSlug: string; origin: string } {
+interface SouledStoreScope {
+  artistSlug?: string;
+  genders: number[];
+  complete: boolean;
+  origin: string;
+}
+
+function souledStoreScope(raw: string): SouledStoreScope {
   const url = assertSafeUrl(raw);
   const host = url.hostname.toLowerCase();
   if (!['www.thesouledstore.com', 'thesouledstore.com'].includes(host)) {
@@ -325,9 +342,29 @@ function souledStoreCollection(raw: string): { artistSlug: string; origin: strin
     throw new Error('Souled Store feed URL contains unsupported credentials or port');
   }
 
-  const match = /^\/artists\/([a-z0-9][a-z0-9-]{1,120})\/?$/.exec(url.pathname);
-  if (!match) throw new Error('Souled Store feed must be an /artists/:slug collection URL');
-  return { artistSlug: match[1], origin: 'https://www.thesouledstore.com' };
+  const artist = /^\/artists\/([a-z0-9][a-z0-9-]{1,120})\/?$/.exec(url.pathname);
+  if (artist) {
+    return {
+      artistSlug: artist[1],
+      genders: [],
+      complete: true,
+      origin: 'https://www.thesouledstore.com',
+    };
+  }
+
+  // The public top-level storefront is the authorised whole-catalogue source.
+  // Gender-specific paths are supported for merchant-operated feeds too.
+  const section = url.pathname.replace(/\/+$/, '') || '/';
+  if (section === '/') {
+    return { genders: [1, 2], complete: false, origin: 'https://www.thesouledstore.com' };
+  }
+  if (section === '/men') {
+    return { genders: [1], complete: false, origin: 'https://www.thesouledstore.com' };
+  }
+  if (section === '/women') {
+    return { genders: [2], complete: false, origin: 'https://www.thesouledstore.com' };
+  }
+  throw new Error('Souled Store feed must be the storefront, /men, /women, or an /artists/:slug collection URL');
 }
 
 function souledStoreImage(raw: string): string {
@@ -347,7 +384,7 @@ function souledStoreGender(genderType: number | undefined): string {
 
 export function parseSouledStoreListing(
   body: string,
-  artistSlug: string,
+  artistSlug = '',
   storefrontOrigin = 'https://www.thesouledstore.com',
 ): { items: RawItem[]; currentPage: number; totalPages: number } {
   const payload = JSON.parse(body) as SouledStoreListingResponse;
@@ -362,7 +399,7 @@ export function parseSouledStoreListing(
   for (const product of listing.products) {
     // A response may include promotional or cross-sell cards. Only accept
     // genuine products explicitly attached to the requested artist collection.
-    if (product.artist?.slug !== artistSlug) continue;
+    if (artistSlug && product.artist?.slug !== artistSlug) continue;
     const id = product.id;
     const title = product.product?.trim();
     const slug = product.productSlug?.trim();
@@ -374,6 +411,12 @@ export function parseSouledStoreListing(
     const salePrice = Number(product.splPrice);
     const hasPublicSale = Number.isFinite(salePrice) && salePrice > 0 && salePrice < regularPrice;
     const images = (product.images ?? []).filter((image) => typeof image === 'string' && image.trim()).map(souledStoreImage);
+    const attributes = (product.variants ?? []).flatMap((variant) => variant.attributes ?? []);
+    const valuesFor = (names: RegExp) =>
+      attributes
+        .filter((attribute) => names.test(attribute.name?.trim() ?? ''))
+        .map((attribute) => attribute.value?.trim() ?? '')
+        .filter(Boolean);
     const destination = new URL(`/product/${encodeURIComponent(slug)}`, storefrontOrigin);
     if (product.genderType) destination.searchParams.set('gte', String(product.genderType));
 
@@ -390,6 +433,9 @@ export function parseSouledStoreListing(
       url: destination.toString(),
       image_url: images[0],
       images,
+      sizes: valuesFor(/^size$/i),
+      colors: valuesFor(/^colou?r$/i),
+      materials: valuesFor(/^(fabric|material)$/i),
       availability: Number(product.prodQty) > 0 ? 'in_stock' : 'out_of_stock',
       gender: souledStoreGender(product.genderType),
       vendor: 'The Souled Store',
@@ -401,63 +447,72 @@ export function parseSouledStoreListing(
   return { items, currentPage, totalPages };
 }
 
-function souledStoreListingQuery(artistSlug: string, page: number): string {
+function souledStoreListingQuery(artistSlug: string | undefined, page: number, gender?: number): string {
   return `{
     listing(
       page: ${page},
       size: ${SOULED_STORE_PAGE_SIZE},
+      ${gender ? `gender: ${gender},` : ''}
       isWeb: true,
       sort: POPULARITY,
-      artist: ${JSON.stringify([artistSlug])},
+      artist: ${JSON.stringify(artistSlug ? [artistSlug] : [])},
       tags: [],
       filters: { price: [] }
     ) {
       products {
         id product artist { name slug } category { name } price genderType
         stock prodQty splPrice images productSlug
+        variants { id attributes { name value } }
       }
       pagination { currentPage totalPages }
     }
   }`;
 }
 
-async function fetchSouledStoreFeed(feedUrl: string): Promise<{ items: RawItem[]; bytes: number }> {
-  const collection = souledStoreCollection(feedUrl);
+async function fetchSouledStoreFeed(feedUrl: string): Promise<{ items: RawItem[]; bytes: number; complete: boolean }> {
+  const scope = souledStoreScope(feedUrl);
   const items: RawItem[] = [];
   let bytes = 0;
-  let expectedPages = 1;
 
-  for (let page = 1; page <= expectedPages; page++) {
-    const fetched = await safeJsonPostResult(SOULED_STORE_API, {
-      query: souledStoreListingQuery(collection.artistSlug, page),
-      localcart: null,
-      is_ab_visible: true,
-    });
-    bytes += fetched.bytes;
-    if (bytes > SOULED_STORE_MAX_BYTES) {
-      throw new Error('Souled Store feed exceeds aggregate byte limit');
-    }
-
-    const parsed = parseSouledStoreListing(fetched.body, collection.artistSlug, collection.origin);
-    if (page === 1) {
-      expectedPages = parsed.totalPages;
-      if (expectedPages > SOULED_STORE_MAX_PAGES) {
-        throw new Error('Souled Store feed exceeds page limit');
+  const genders = scope.genders.length ? scope.genders : [undefined];
+  for (const gender of genders) {
+    let expectedPages = 1;
+    let reportedPages = 1;
+    for (let page = 1; page <= expectedPages; page++) {
+      const fetched = await safeJsonPostResult(SOULED_STORE_API, {
+        query: souledStoreListingQuery(scope.artistSlug, page, gender),
+        localcart: null,
+        is_ab_visible: true,
+      });
+      bytes += fetched.bytes;
+      if (bytes > SOULED_STORE_MAX_BYTES) {
+        throw new Error('Souled Store feed exceeds aggregate byte limit');
       }
-    } else if (parsed.totalPages !== expectedPages) {
-      throw new Error('Souled Store pagination changed during sync');
-    }
-    if (parsed.currentPage !== page) throw new Error('Souled Store returned an unexpected page');
-    if (parsed.items.length > SOULED_STORE_PAGE_SIZE) {
-      throw new Error('Souled Store feed page exceeds item limit');
-    }
-    items.push(...parsed.items);
-    if (items.length > SOULED_STORE_MAX_ITEMS) {
-      throw new Error('Souled Store feed exceeds item limit');
+
+      const parsed = parseSouledStoreListing(fetched.body, scope.artistSlug, scope.origin);
+      if (page === 1) {
+        reportedPages = parsed.totalPages;
+        expectedPages = scope.complete
+          ? reportedPages
+          : Math.min(reportedPages, SOULED_STORE_SNAPSHOT_PAGES_PER_GENDER);
+        if (expectedPages > SOULED_STORE_MAX_PAGES) {
+          throw new Error('Souled Store feed exceeds page limit');
+        }
+      } else if (parsed.totalPages !== reportedPages) {
+        throw new Error('Souled Store pagination changed during sync');
+      }
+      if (parsed.currentPage !== page) throw new Error('Souled Store returned an unexpected page');
+      if (parsed.items.length > SOULED_STORE_PAGE_SIZE) {
+        throw new Error('Souled Store feed page exceeds item limit');
+      }
+      items.push(...parsed.items);
+      if (items.length > SOULED_STORE_MAX_ITEMS) {
+        throw new Error('Souled Store feed exceeds item limit');
+      }
     }
   }
 
-  return { items, bytes };
+  return { items, bytes, complete: scope.complete };
 }
 
 // ---------------------------------------------------------------- google merchant
@@ -626,8 +681,8 @@ export function parseCsv(body: string): RawItem[] {
 export async function fetchFeed(
   feedUrl: string,
   feedType: FeedType,
-): Promise<{ items: RawItem[]; bytes: number }> {
-  if (feedType === 'shopify') return fetchShopifyFeed(feedUrl);
+): Promise<{ items: RawItem[]; bytes: number; complete: boolean }> {
+  if (feedType === 'shopify') return { ...(await fetchShopifyFeed(feedUrl)), complete: true };
   if (feedType === 'souled_store') return fetchSouledStoreFeed(feedUrl);
 
   const fetched = await safeFetchResult(feedUrl);
@@ -645,5 +700,5 @@ export async function fetchFeed(
       throw new Error(`unknown feed type: ${feedType}`);
   }
 
-  return { items, bytes: fetched.bytes };
+  return { items, bytes: fetched.bytes, complete: true };
 }
