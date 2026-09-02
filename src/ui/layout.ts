@@ -1,6 +1,10 @@
 import type { Env } from '../types';
 import { esc, escJson } from '../lib/util';
 
+/** Bump when critical interaction assets change so returning shoppers cannot
+ * stay on an incompatible cached client after a production deployment. */
+const ASSET_VERSION = '20260903-interactions';
+
 export interface LayoutOptions {
   env: Env;
   title: string;
@@ -94,6 +98,10 @@ export function searchBarShell(variant: 'hero' | 'header' | 'dock', value = ''):
     variant === 'hero'
       ? 'Search the live catalogue by product, style, colour, or brand'
       : 'Describe what you want…';
+  const submit =
+    variant === 'hero'
+      ? `<button type="submit" class="btn btn-primary search-submit" aria-label="Search">${ICONS.search}<span class="search-submit-label">Search</span></button>`
+      : `<button type="submit" class="icon-btn" aria-label="Search">${ICONS.search}</button>`;
   return `<div class="searchbar" data-searchbar data-variant="${variant}">
   <form action="/search" method="GET" role="search">
     <label class="sr-only" for="${id}">Search for clothing</label>
@@ -104,7 +112,7 @@ export function searchBarShell(variant: 'hero' | 'header' | 'dock', value = ''):
     <div class="actions">
       <button type="button" class="icon-btn" data-camera hidden
         aria-label="Search by image">${ICONS.camera}</button>
-      <button type="submit" class="icon-btn" aria-label="Search">${ICONS.search}</button>
+      ${submit}
     </div>
   </form>
   <div class="suggestions" id="${id}-suggest" role="listbox" hidden></div>
@@ -191,7 +199,7 @@ ${opts.noindex ? '<meta name="robots" content="noindex,follow">' : '<meta name="
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f0e0d" media="(prefers-color-scheme: dark)">
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css?v=${ASSET_VERSION}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="search" type="application/opensearchdescription+xml" title="${esc(opts.env.SITE_NAME)}" href="/opensearch.xml">
@@ -205,7 +213,7 @@ ${header(opts)}
 ${footer(opts.env)}
 ${opts.showMobileDock ? `<div class="mobile-dock">${searchBarShell('dock')}</div>` : ''}
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-<script src="/app.js" defer nonce="${opts.nonce}"></script>
+<script src="/app.js?v=${ASSET_VERSION}" defer nonce="${opts.nonce}"></script>
 </body>
 </html>`;
 }

@@ -346,21 +346,25 @@ pageRoutes.get('/', async (c) => {
 </div></section>
 
 <section class="journey-strip"><div class="wrap journey-grid">
-  <a class="journey-card" href="/look-builder">
+  <a class="journey-card" href="/look-builder" data-journey>
     <span class="journey-icon" aria-hidden="true">01</span>
     <span><strong>Build one complete look</strong><small>Coordinated pieces inside one total budget</small></span>
+    <span class="journey-action" aria-hidden="true">Open <span>→</span></span>
   </a>
-  <a class="journey-card" href="/trip-planner">
+  <a class="journey-card" href="/trip-planner" data-journey>
     <span class="journey-icon" aria-hidden="true">02</span>
     <span><strong>Plan a trip wardrobe</strong><small>Day-by-day looks without budget surprises</small></span>
+    <span class="journey-action" aria-hidden="true">Open <span>→</span></span>
   </a>
-  <a class="journey-card" href="/profile">
+  <a class="journey-card" href="/profile" data-journey>
     <span class="journey-icon" aria-hidden="true">03</span>
     <span><strong>Remember my fit</strong><small>Lift pieces available in your usual sizes</small></span>
+    <span class="journey-action" aria-hidden="true">Open <span>→</span></span>
   </a>
-  <a class="journey-card" href="/visual-search">
+  <a class="journey-card" href="/visual-search" data-journey>
     <span class="journey-icon" aria-hidden="true">04</span>
     <span><strong>Search from a photo</strong><small>Turn a screenshot into a live-catalogue query</small></span>
+    <span class="journey-action" aria-hidden="true">Open <span>→</span></span>
   </a>
 </div></section>
 

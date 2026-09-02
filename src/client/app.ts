@@ -221,8 +221,8 @@ function initSearchBar(bar: HTMLElement): void {
     }
     close();
     form.setAttribute('aria-busy', 'true');
-    const submit = $<HTMLButtonElement>('button[type="submit"]', form);
-    if (submit) submit.disabled = true;
+    const submitLabel = $<HTMLElement>('.search-submit-label', form);
+    if (submitLabel) submitLabel.textContent = 'Searching…';
   });
 
   // Image search (U6). The button is hidden server-side and revealed only when
@@ -253,6 +253,33 @@ function initSearchBar(bar: HTMLElement): void {
         }
       });
       picker.click();
+    });
+  }
+}
+
+/** Browsers may restore a page from their back/forward cache with transient
+ * loading attributes intact. Clear them so a second search is always usable. */
+function resetTransientNavigationState(): void {
+  for (const form of $$<HTMLFormElement>('[data-searchbar] form')) {
+    form.removeAttribute('aria-busy');
+    const submit = $<HTMLButtonElement>('button[type="submit"]', form);
+    if (submit) submit.disabled = false;
+    const label = $<HTMLElement>('.search-submit-label', form);
+    if (label) label.textContent = 'Search';
+  }
+  for (const card of $$<HTMLAnchorElement>('[data-journey]')) {
+    card.removeAttribute('aria-busy');
+    const action = $<HTMLElement>('.journey-action', card);
+    if (action) action.innerHTML = 'Open <span>→</span>';
+  }
+}
+
+function initJourneyCards(): void {
+  for (const card of $$<HTMLAnchorElement>('[data-journey]')) {
+    card.addEventListener('click', () => {
+      card.setAttribute('aria-busy', 'true');
+      const action = $<HTMLElement>('.journey-action', card);
+      if (action) action.textContent = 'Opening…';
     });
   }
 }
@@ -720,7 +747,9 @@ function initStylist(): void {
 // ---------------------------------------------------------------- boot
 
 function boot(): void {
+  resetTransientNavigationState();
   for (const bar of $$<HTMLElement>('[data-searchbar]')) initSearchBar(bar);
+  initJourneyCards();
   initImageSearchLaunchers();
   initImages();
   initSaves();
@@ -732,6 +761,8 @@ function boot(): void {
   initBounceBeacon();
   initStylist();
 }
+
+window.addEventListener('pageshow', resetTransientNavigationState);
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', boot, { once: true });

@@ -43,6 +43,50 @@ test('search submits with Enter before or without client JavaScript', async ({ b
   }
 });
 
+test('search button stays usable after returning to a restored home page', async ({ page }) => {
+  await page.goto('/');
+  const search = page.getByRole('combobox', { name: 'Search for clothing' });
+  const submit = page.getByRole('button', { name: 'Search', exact: true });
+
+  await search.fill('cotton dress');
+  await submit.click();
+  await expect(page).toHaveURL(/\/search\?q=cotton(?:\+|%20)dress/);
+
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+  await expect(submit).toBeEnabled();
+  await search.fill('linen shirt');
+  await submit.click();
+  await expect(page).toHaveURL(/\/search\?q=linen(?:\+|%20)shirt/);
+});
+
+test('home feature cards are clear full-card actions and open every tool', async ({ page }) => {
+  const journeys = [
+    ['Build one complete look', '/look-builder', 'Build a complete look'],
+    ['Plan a trip wardrobe', '/trip-planner', 'Pack the trip, not random pieces.'],
+    ['Remember my fit', '/profile', 'Find your size sooner.'],
+    ['Search from a photo', '/visual-search', 'Start with the image in your head.'],
+  ] as const;
+
+  await page.goto('/');
+  await expect(page.locator('[data-journey]')).toHaveCount(4);
+  await expect(page.locator('[data-journey] .journey-action')).toHaveText([
+    'Open →',
+    'Open →',
+    'Open →',
+    'Open →',
+  ]);
+  await expect(page.locator('link[rel="stylesheet"]')).toHaveAttribute('href', /styles\.css\?v=/);
+  await expect(page.locator('script[src]')).toHaveAttribute('src', /app\.js\?v=/);
+
+  for (const [name, path, heading] of journeys) {
+    await page.goto('/');
+    await page.getByRole('link', { name: new RegExp(name) }).click();
+    await expect(page).toHaveURL(path);
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText(heading);
+  }
+});
+
 test('natural Goa dinner prompt returns budget-safe recommendations', async ({ page }) => {
   const prompt = 'I need a breathable dinner outfit for Goa under ₹5000.';
   await page.goto(`/search?q=${encodeURIComponent(prompt)}`);
