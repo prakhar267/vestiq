@@ -136,6 +136,10 @@ export async function mergeOwner(env: Env, fromKey: string, toKey: string): Prom
        (SELECT brand_id FROM ${T.brandFollows} WHERE owner_key = ?)`,
     `UPDATE ${T.brandFollows} SET owner_key = ? WHERE owner_key = ?`,
     `UPDATE ${T.looks} SET owner_key = ? WHERE owner_key = ?`,
+    `DELETE FROM ${T.profiles} WHERE owner_key = ? AND EXISTS
+       (SELECT 1 FROM ${T.profiles} target WHERE target.owner_key = ?)`,
+    `UPDATE ${T.profiles} SET owner_key = ? WHERE owner_key = ?`,
+    `UPDATE ${T.trips} SET owner_key = ? WHERE owner_key = ?`,
   ];
   await env.DB.batch([
     env.DB.prepare(stmts[0]).bind(fromKey, toKey),
@@ -147,5 +151,8 @@ export async function mergeOwner(env: Env, fromKey: string, toKey: string): Prom
     env.DB.prepare(stmts[6]).bind(fromKey, toKey),
     env.DB.prepare(stmts[7]).bind(toKey, fromKey),
     env.DB.prepare(stmts[8]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[9]).bind(fromKey, toKey),
+    env.DB.prepare(stmts[10]).bind(toKey, fromKey),
+    env.DB.prepare(stmts[11]).bind(toKey, fromKey),
   ]);
 }

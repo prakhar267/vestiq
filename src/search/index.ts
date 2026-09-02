@@ -419,7 +419,7 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
     return {
       ...row,
       score,
-      match_reasons: matchReasons(row, parse),
+      match_reasons: matchReasons(row, parse, opts.session),
       ...(opts.includeScoreParts ? { score_parts: parts } : {}),
     };
   });

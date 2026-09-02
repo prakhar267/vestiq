@@ -57,7 +57,7 @@ Honest critique, i.e. what I would attack if I were competing:
 | **Freshness/accuracy of the long tail** | Small stores go out of stock and stale constantly. A dead link kills trust permanently. | Aggressive **liveness re-crawl** on click-hot SKUs + `last_verified_at` shown to user. Never rank an unverified-in-7-days item on page 1. |
 | **Zero retention loop** | Pure search = zero reason to return. Google is one tab away. | **Wardrobe + saved intents + price/restock alerts.** The alert is the retention primitive: it converts a search into an owned, recurring touchpoint. |
 | **Cold-start on taste** | The first query has no personalisation, so results feel generic. | Explicit `/taste` onboarding and followed brands produce a bounded ±8% tie-breaker without creating a filter bubble. |
-| **Commercial ranking erodes trust** | Paid placement makes relevance harder to believe, especially while the catalogue is young. | The launch is free for shoppers and brands, with no affiliate wrapping, subscriptions, campaign budgets, payouts, or promoted results. |
+| **Commercial ranking erodes trust** | Paid placement makes relevance harder to believe, especially while the catalogue is young. | Ranking remains organic. Optional merchant-approved affiliate parameters are disclosed and cannot affect ordering. |
 | **No SEO harvest** | An AI search box is client-side and invisible to Google. Yet "co-ord set for goa vacation under 3000" is *exactly* a long-tail search query. | Every query result page is **server-rendered, indexable, JSON-LD marked up**, with programmatic collection pages. This is the cheapest acquisition channel that exists for this product. |
 
 That last one is the single biggest strategic difference in our build and it drives the
@@ -222,8 +222,8 @@ Stated so scope stays honest:
 
 - Shoppers pay Vestiq nothing and see no paywall or Vestiq checkout.
 - Brands pay Vestiq nothing for onboarding, feeds, demand insights, or listing.
-- Outbound links are direct brand URLs without affiliate wrapping.
-- There are no subscriptions, promoted results, CPC budgets, commissions, or payouts.
+- Outbound links keep the brand's product host. Merchants may add approved referral query parameters; enabled links are marked sponsored and disclosed.
+- There are no subscriptions, promoted results, CPC budgets, or payout ledger. Affiliate attribution never affects ranking.
 - Product prices remain visible because purchases happen independently on each brand's site.
 
 Future monetisation is explicitly out of launch scope and requires a new product,

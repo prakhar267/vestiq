@@ -18,6 +18,8 @@ type Merchant = {
   status: string;
   brand_name: string;
   brand_slug: string;
+  affiliate_network: string | null;
+  affiliate_tmpl: string | null;
 };
 
 type Ctx = {
@@ -36,7 +38,8 @@ async function resolveMerchant(env: Env, apiKey: string): Promise<Merchant | nul
   try {
     return await env.DB.prepare(
       `SELECT m.id, m.brand_id, m.email, m.feed_url, m.feed_type, m.feed_status,
-              m.last_sync_at, m.status, b.name AS brand_name, b.slug AS brand_slug
+              m.last_sync_at, m.status, b.name AS brand_name, b.slug AS brand_slug,
+              b.affiliate_network, b.affiliate_tmpl
        FROM ${T.merchants} m JOIN ${T.brands} b ON b.id = m.brand_id
        WHERE m.api_key_hash = ?`,
     )
@@ -75,6 +78,7 @@ function shell(c: { env: Env; var: { app: AppContext; merchant?: Merchant } }, t
               <a class="chip" href="/merchant">Dashboard</a>
               <a class="chip" href="/merchant/feed">Feed</a>
               <a class="chip" href="/merchant/demand">Insights</a>
+              <a class="chip" href="/merchant/attribution">Attribution</a>
               <form method="POST" action="/merchant/logout" style="display:inline">
                 <button class="chip" type="submit">Sign out</button></form>
             </nav>
@@ -296,10 +300,11 @@ merchantRoutes.get('/merchant', async (c) => {
   if (!m) return c.redirect('/merchant/login', 302);
 
   const week = Date.now() - 7 * 86_400_000;
-  const [skus, impressions, clicks, lastRun] = await Promise.all([
+  const [skus, impressions, clicks, affiliateClicks, lastRun] = await Promise.all([
     num(c.env, `SELECT COUNT(*) AS n FROM ${T.products} WHERE brand_id = ? AND status = 'active'`, [m.brand_id]),
     num(c.env, `SELECT COUNT(*) AS n FROM ${T.events} WHERE brand_id = ? AND type = 'impression' AND ts > ?`, [m.brand_id, week]),
     num(c.env, `SELECT COUNT(*) AS n FROM ${T.clicks} WHERE brand_id = ? AND ts > ?`, [m.brand_id, week]),
+    num(c.env, `SELECT COUNT(*) AS n FROM ${T.clicks} WHERE brand_id = ? AND affiliate = 1 AND ts > ?`, [m.brand_id, week]),
     c.env.DB.prepare(
       `SELECT * FROM ${T.feedRuns} WHERE brand_id = ? ORDER BY started_at DESC LIMIT 1`,
     )
@@ -325,7 +330,9 @@ merchantRoutes.get('/merchant', async (c) => {
         <div class="stat"><div class="label">Live SKUs</div><div class="value">${skus}</div></div>
         <div class="stat"><div class="label">Impressions 7d</div><div class="value">${impressions.toLocaleString('en-IN')}</div></div>
         <div class="stat"><div class="label">Clicks 7d</div><div class="value">${clicks.toLocaleString('en-IN')}</div></div>
+        <div class="stat"><div class="label">Attributed 7d</div><div class="value">${affiliateClicks.toLocaleString('en-IN')}</div></div>
       </div>
+      <p class="tiny">${m.affiliate_tmpl ? `Affiliate attribution is active via ${esc(m.affiliate_network ?? 'your programme')}.` : '<a href="/merchant/attribution">Configure transparent affiliate attribution</a> when your programme is approved.'}</p>
       ${sectionHead('Feed health')}
       ${
         lastRun
@@ -483,6 +490,53 @@ merchantRoutes.post('/merchant/feed/status', async (c) => {
 
   await audit(c.env, `merchant:${m.id}`, `feed_${action}`, m.brand_id);
   return c.redirect('/merchant/feed', 302);
+});
+
+// ---------------------------------------------------------------- attribution
+
+merchantRoutes.get('/merchant/attribution', (c) => {
+  const m = requireMerchant(c);
+  if (!m) return c.redirect('/merchant/login', 302);
+  return c.html(
+    shell(
+      c,
+      'Attribution',
+      `<h1>Affiliate attribution</h1>
+      <p class="muted" style="max-width:64ch">Attach your approved referral parameters to Vestiq hop-outs. We append them to your existing product URL; the destination host can never be changed.</p>
+      <div class="notice" style="max-width:620px"><strong>Transparent by design.</strong><p class="tiny" style="margin:var(--s2) 0 0">When enabled, shopper links are marked sponsored and the product page discloses that Vestiq may earn a commission. Ranking stays organic.</p></div>
+      <form method="POST" action="/merchant/attribution" style="max-width:620px;margin-top:var(--s5)">
+        <label class="field"><span>Affiliate network or programme</span><input name="network" maxlength="60" value="${esc(m.affiliate_network ?? '')}" placeholder="Your in-house programme"></label>
+        <label class="field"><span>Approved URL parameters</span><input name="params" maxlength="240" value="${esc(m.affiliate_tmpl ?? '')}" placeholder="ref=vestiq&amp;utm_source=vestiq"></label>
+        <p class="tiny">Query parameters only. Protocols, hosts, fragments and redirect URLs are rejected.</p>
+        <button class="btn btn-primary" type="submit">Save attribution settings</button>
+        ${m.affiliate_tmpl ? '<button class="btn" type="submit" name="disable" value="1">Disable</button>' : ''}
+      </form>`,
+    ),
+  );
+});
+
+merchantRoutes.post('/merchant/attribution', async (c) => {
+  const m = requireMerchant(c);
+  if (!m) return c.redirect('/merchant/login', 302);
+  const form = await c.req.formData();
+  const disable = form.get('disable') === '1';
+  const network = String(form.get('network') ?? '').trim().slice(0, 60);
+  const params = String(form.get('params') ?? '').trim().replace(/^\?/, '').slice(0, 240);
+  if (!disable && params) {
+    if (/[#\r\n]|:\/\//.test(params)) return c.text('Use query parameters only.', 400);
+    const parsed = new URLSearchParams(params);
+    const entries = [...parsed.entries()];
+    if (!entries.length || entries.length > 10 || entries.some(([key, value]) => !/^[a-zA-Z][a-zA-Z0-9_.-]{0,39}$/.test(key) || value.length > 120 || /^(?:https?:)?\/\//i.test(value))) {
+      return c.text('Check the attribution parameters.', 400);
+    }
+  }
+  await c.env.DB.prepare(
+    `UPDATE ${T.brands} SET affiliate_network = ?, affiliate_tmpl = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(disable || !params ? null : network || 'direct', disable || !params ? null : params, Date.now(), m.brand_id)
+    .run();
+  await audit(c.env, `merchant:${m.id}`, disable || !params ? 'affiliate_disabled' : 'affiliate_configured', m.brand_id, { network: network || 'direct' });
+  return c.redirect('/merchant/attribution', 303);
 });
 
 // ---------------------------------------------------------------- demand (T3)

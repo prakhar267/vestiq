@@ -29,6 +29,18 @@ export interface Env {
   RESEND_API_KEY?: string;
 }
 
+export type FitPreference = 'slim' | 'regular' | 'relaxed' | 'oversized';
+
+/** Shopper-controlled defaults used only as bounded ranking preferences. */
+export interface FitProfile {
+  gender?: Gender;
+  top_size?: string;
+  bottom_size?: string;
+  shoe_size?: string;
+  fit?: FitPreference;
+  avoid_materials: string[];
+}
+
 export type Gender = 'women' | 'men' | 'unisex' | 'kids';
 export type Availability = 'in_stock' | 'low_stock' | 'out_of_stock';
 export type SortKey = 'relevance' | 'price_asc' | 'price_desc' | 'newest' | 'popular';
@@ -202,6 +214,8 @@ export interface SessionData {
   taste?: Record<string, number>;
   recent_queries: string[];
   gender_pref?: Gender;
+  /** Explicit shopper fit settings. Sizes influence ranking but never hide stock. */
+  fit?: FitProfile;
 }
 
 export interface AppContext {

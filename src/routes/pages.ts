@@ -4,6 +4,7 @@ import { PRODUCT_COLUMNS, T, inClause, rowToBrand, rowToProduct } from '../lib/d
 import { esc, formatINR, newId, normaliseQuery, safeJson, sha256Hex, timeAgo, truncate } from '../lib/util';
 import { mergeOwner, ownerKey, saveSession } from '../lib/session';
 import { sendEmail } from '../lib/email';
+import { fitPrompt, hasFitProfile, loadShopperProfile, persistFitProfile, persistTasteProfile, sanitiseFitProfile } from '../lib/profile';
 import { rateIdentity, rateLimit } from '../lib/ratelimit';
 import {
   ALL_CATEGORIES,
@@ -328,6 +329,7 @@ pageRoutes.get('/', async (c) => {
 
   const body = `
 <section class="hero"><div class="wrap">
+  <p class="hero-kicker">AI stylist · live Indian fashion inventory</p>
   <h1>Fashion the internet hid from you.</h1>
   <p class="tagline">${esc(env.SITE_TAGLINE)} Search independent brands by mood, occasion, budget — or a screenshot.</p>
   ${searchBarShell('hero')}
@@ -343,7 +345,24 @@ pageRoutes.get('/', async (c) => {
   </div>` : ''}
 </div></section>
 
-<hr class="divider">
+<section class="journey-strip"><div class="wrap journey-grid">
+  <a class="journey-card" href="/look-builder">
+    <span class="journey-icon" aria-hidden="true">01</span>
+    <span><strong>Build one complete look</strong><small>Coordinated pieces inside one total budget</small></span>
+  </a>
+  <a class="journey-card" href="/trip-planner">
+    <span class="journey-icon" aria-hidden="true">02</span>
+    <span><strong>Plan a trip wardrobe</strong><small>Day-by-day looks without budget surprises</small></span>
+  </a>
+  <a class="journey-card" href="/profile">
+    <span class="journey-icon" aria-hidden="true">03</span>
+    <span><strong>Remember my fit</strong><small>Lift pieces available in your usual sizes</small></span>
+  </a>
+  <a class="journey-card" href="/visual-search">
+    <span class="journey-icon" aria-hidden="true">04</span>
+    <span><strong>Search from a photo</strong><small>Turn a screenshot into a live-catalogue query</small></span>
+  </a>
+</div></section>
 
 ${
   trending.length
@@ -405,6 +424,35 @@ ${
     ),
   );
 });
+
+// ============================================================ visual search entry
+
+pageRoutes.get('/visual-search', (c) =>
+  c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Visual search — ${c.env.SITE_NAME}`,
+        description: 'Upload a fashion photo or screenshot and find visually similar pieces in the live catalogue.',
+        path: '/visual-search',
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+        activeNav: 'search',
+      },
+      `<div class="wrap-narrow"><section class="section visual-search-panel">
+        <p class="eyebrow">Visual search</p><h1>Start with the image in your head.</h1>
+        <p class="muted">Upload a screenshot or photo. Vestiq reads the visible colour, fabric and silhouette, then turns it into an editable search across real stock.</p>
+        <div class="upload-stage"><div class="upload-mark" aria-hidden="true">＋</div><h2>Choose a fashion image</h2>
+          <p class="tiny">JPEG, PNG or WebP · up to 6 MB · images are processed, not retained</p>
+          <button class="btn btn-primary" type="button" data-image-search hidden>Choose image</button>
+          <noscript><p class="notice">Visual search needs JavaScript. You can still <a href="/search">search with words</a>.</p></noscript>
+        </div>
+        <div class="notice"><strong>You stay in control.</strong> The generated description opens as a normal text search, so you can change or remove every inferred detail.</div>
+      </section></div>`,
+    ),
+  ),
+);
 
 // ============================================================ search
 
@@ -515,7 +563,9 @@ ${parseChips(response.parse, query)}
       </p>
       <p style="margin-top:var(--s3)">
         <a class="btn btn-sm" href="/save-search?q=${encodeURIComponent(query)}">Save this search</a>
+        <a class="btn btn-sm" href="/look-builder?q=${encodeURIComponent(query)}">Build a complete look</a>
       </p>
+      ${hasFitProfile(app.session) ? '<p class="tiny fit-active">✓ Ranked with your saved fit profile</p>' : '<p class="tiny"><a href="/profile">Add your sizes</a> for fit-aware ranking.</p>'}
     </div>
     ${sortSelect(sort, query, params)}
   </div>
@@ -577,7 +627,8 @@ pageRoutes.get('/p/:handle', async (c) => {
 
   const row = await env.DB.prepare(
     `SELECT ${PRODUCT_COLUMNS}, b.description AS brand_description, b.domain AS brand_domain,
-            b.return_days AS brand_return_days, b.city AS brand_city
+            b.return_days AS brand_return_days, b.city AS brand_city,
+            b.affiliate_tmpl AS brand_affiliate_tmpl
      FROM ${T.products} p JOIN ${T.brands} b ON b.id = p.brand_id
      WHERE p.id = ? AND p.status = 'active' AND b.status = 'active'`,
   )
@@ -725,7 +776,7 @@ pageRoutes.get('/p/:handle', async (c) => {
       </div>
 
       <a class="btn btn-primary btn-block" href="/go/${esc(product.id)}"
-         rel="nofollow noopener" target="_blank"
+         rel="nofollow noopener${row.brand_affiliate_tmpl ? ' sponsored' : ''}" target="_blank"
          style="margin-bottom:var(--s3)">
         View on ${esc(item.brand_name)} ${ICONS.arrow}
       </a>
@@ -779,7 +830,7 @@ pageRoutes.get('/p/:handle', async (c) => {
       </p>
       <p class="disclosure">
         You buy directly from ${esc(item.brand_name)}. Price and availability shown
-        as last checked may differ on the brand's site.
+        as last checked may differ on the brand's site.${row.brand_affiliate_tmpl ? ' This is an affiliate link; Vestiq may earn a commission without changing your price or the organic ranking.' : ''}
       </p>
     </div>
   </div>
@@ -956,6 +1007,65 @@ pageRoutes.post('/brand/:slug/follow', async (c) => {
       .run();
   }
   return c.redirect(`/brand/${encodeURIComponent(slug)}`, 303);
+});
+
+// ============================================================ inventory sources
+
+pageRoutes.get('/sources', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT b.name, b.slug, b.domain, b.trust_score,
+            COUNT(p.id) AS product_count, MAX(p.last_verified_at) AS last_verified_at,
+            GROUP_CONCAT(DISTINCT p.category) AS categories,
+            MAX(COALESCE(m.feed_type, 'authorised')) AS feed_type
+     FROM ${T.brands} b
+     JOIN ${T.products} p ON p.brand_id = b.id AND p.status = 'active'
+     LEFT JOIN ${T.merchants} m ON m.brand_id = b.id
+     WHERE b.status = 'active'
+     GROUP BY b.id ORDER BY product_count DESC, b.name ASC LIMIT 200`,
+  ).all<Record<string, unknown>>();
+  const sources = rows.results ?? [];
+  const products = sources.reduce((sum, row) => sum + Number(row.product_count ?? 0), 0);
+  const feedLabel = (value: unknown) => {
+    const labels: Record<string, string> = {
+      shopify: 'Shopify live feed',
+      gmc: 'Google Merchant feed',
+      csv: 'Merchant CSV feed',
+      souled_store: 'Authorised collection feed',
+      authorised: 'Authorised catalogue',
+    };
+    return labels[String(value)] ?? 'Authorised catalogue';
+  };
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Inventory sources — ${c.env.SITE_NAME}`,
+        description: 'See exactly which merchant catalogues power Vestiq search and when they were checked.',
+        path: '/sources',
+        nonce: c.var.app.nonce,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap"><section class="section page-intro">
+        <p class="eyebrow">Catalogue transparency</p><h1>Every result has a real source.</h1>
+        <p class="muted">Vestiq indexes merchant-authorised feeds and public collections. We do not invent products or hold stock.</p>
+        <div class="stat-row"><div class="stat"><div class="label">Live sources</div><div class="value">${sources.length}</div></div>
+          <div class="stat"><div class="label">Live pieces</div><div class="value">${products.toLocaleString('en-IN')}</div></div>
+          <div class="stat"><div class="label">Refresh model</div><div class="value stat-text">Automatic</div></div></div>
+      </section>
+      <div class="source-grid">${sources.map((source) => {
+        const categories = String(source.categories ?? '').split(',').filter(Boolean).slice(0, 4);
+        return `<article class="source-card"><div class="row-between"><div><p class="eyebrow">${esc(feedLabel(source.feed_type))}</p>
+          <h2><a href="/brand/${esc(String(source.slug))}">${esc(String(source.name))}</a></h2></div>
+          <span class="trust-score">${Number(source.trust_score)}/100</span></div>
+          <p class="tiny">${Number(source.product_count).toLocaleString('en-IN')} live pieces · checked ${esc(timeAgo(Number(source.last_verified_at)))}</p>
+          <ul class="chips">${categories.map((category) => `<li class="chip">${esc(label(category))}</li>`).join('')}</ul>
+        </article>`;
+      }).join('') || '<p class="muted">No live merchant sources yet.</p>'}</div>
+      <section class="section callout-panel"><div><p class="eyebrow">Merchant-ready</p><h2>Add another store without code.</h2>
+        <p class="muted">Shopify, Google Merchant XML, CSV and authorised collection feeds are supported.</p></div>
+        <a class="btn btn-primary" href="/merchant/signup">Connect a store</a></section></div>`,
+    ),
+  );
 });
 
 // ============================================================ collections
@@ -1176,6 +1286,13 @@ pageRoutes.get('/wardrobe', async (c) => {
     .bind(owner)
     .all<{ id: string; title: string; total_price: number; created_at: number }>();
   const looks = looksRes.results ?? [];
+  const tripsRes = await env.DB.prepare(
+    `SELECT id, title, destination, days, total_price, created_at FROM ${T.trips}
+     WHERE owner_key = ? AND status = 'active' ORDER BY created_at DESC LIMIT 20`,
+  )
+    .bind(owner)
+    .all<{ id: string; title: string; destination: string; days: number; total_price: number; created_at: number }>();
+  const trips = tripsRes.results ?? [];
 
   return c.html(
     layout(
@@ -1193,7 +1310,7 @@ pageRoutes.get('/wardrobe', async (c) => {
       `<div class="wrap">
         <section class="section">
           <h1>Your wardrobe</h1>
-          <p style="margin-top:var(--s3)"><a class="btn btn-sm" href="/taste">Tune your taste</a> <a class="btn btn-sm" href="/account">Cross-device account</a></p>
+          <p class="action-row"><a class="btn btn-sm" href="/profile">Fit profile</a> <a class="btn btn-sm" href="/taste">Tune your taste</a> <a class="btn btn-sm" href="/trip-planner">Plan a trip</a> <a class="btn btn-sm" href="/account">Cross-device account</a></p>
           ${
             app.session.user_id
               ? ''
@@ -1259,6 +1376,15 @@ pageRoutes.get('/wardrobe', async (c) => {
             : ''
         }
         ${
+          trips.length
+            ? `<section class="section">${sectionHead('Trip wardrobes')}
+                <div class="table-wrap"><table><thead><tr><th>Trip</th><th>Days</th><th class="num">Planned</th><th></th></tr></thead>
+                <tbody>${trips.map((trip) => `<tr><td><a href="/trips/${esc(trip.id)}">${esc(trip.title)}</a><span class="tiny"> ${esc(trip.destination)}</span></td>
+                  <td>${trip.days}</td><td class="num">${esc(formatINR(trip.total_price))}</td>
+                  <td><form method="POST" action="/wardrobe/trips/${esc(trip.id)}/remove"><button class="btn btn-sm" type="submit">Remove</button></form></td></tr>`).join('')}</tbody></table></div></section>`
+            : ''
+        }
+        ${
           followedBrands.length
             ? `<section class="section">${sectionHead('Followed brands')}${chipLinks(
                 followedBrands.map((brand) => ({ label: brand.name, href: `/brand/${brand.slug}` })),
@@ -1312,6 +1438,21 @@ pageRoutes.post('/wardrobe/looks/:id/remove', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare(`DELETE FROM ${T.lookItems} WHERE look_id = ?`).bind(id),
       c.env.DB.prepare(`UPDATE ${T.looks} SET status = 'removed' WHERE id = ?`).bind(id),
+    ]);
+  }
+  return c.redirect('/wardrobe', 303);
+});
+
+pageRoutes.post('/wardrobe/trips/:id/remove', async (c) => {
+  const id = c.req.param('id');
+  const owner = ownerKey(c.var.app.session);
+  const owned = await c.env.DB.prepare(`SELECT id FROM ${T.trips} WHERE id = ? AND owner_key = ?`)
+    .bind(id, owner)
+    .first<{ id: string }>();
+  if (owned) {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE ${T.looks} SET status = 'removed' WHERE id IN (SELECT look_id FROM ${T.tripLooks} WHERE trip_id = ?)`).bind(id),
+      c.env.DB.prepare(`UPDATE ${T.trips} SET status = 'removed' WHERE id = ?`).bind(id),
     ]);
   }
   return c.redirect('/wardrobe', 303);
@@ -1478,6 +1619,7 @@ pageRoutes.get('/look-builder', async (c) => {
       `<div class="wrap-narrow"><section class="section">
         <p class="eyebrow">Stylist tool</p><h1>Build a complete look</h1>
         <p class="muted">We search each outfit slot, then optimise the combination against your total budget. The result is saved as a shareable page.</p>
+        ${hasFitProfile(c.var.app.session) ? '<div class="notice good">Your saved fit profile will influence this look.</div>' : '<p class="tiny"><a href="/profile">Add your sizes</a> before building for fit-aware results.</p>'}
         ${seed ? `<div class="notice">Building around <strong>${esc(seed.title)}</strong> by ${esc(seed.brand_name)}.</div>` : ''}
         <form method="POST" action="/look-builder" style="margin-top:var(--s5)">
           ${seedId ? `<input type="hidden" name="seed" value="${esc(seedId)}">` : ''}
@@ -1503,7 +1645,9 @@ pageRoutes.post('/look-builder', async (c) => {
     return c.text('Check the prompt and budget.', 400);
   }
 
-  const built = await buildBudgetedLook(c.env, prompt, Math.round(budgetRupees * 100), c.var.app.session, seedId || undefined);
+  const fit = fitPrompt(c.var.app.session.fit);
+  const searchPrompt = [prompt, fit].filter(Boolean).join('. ').slice(0, 300);
+  const built = await buildBudgetedLook(c.env, searchPrompt, Math.round(budgetRupees * 100), c.var.app.session, seedId || undefined);
   if (!built.items.length) {
     return c.html(
       layout(
@@ -1575,6 +1719,170 @@ pageRoutes.get('/looks/:id', async (c) => {
           ({ slot, item }) => `<section><p class="eyebrow">${esc(label(slot))}</p>${productGrid([item], { now: Date.now() })}</section>`,
         )
         .join('')}</div></div>`,
+    ),
+  );
+});
+
+// ============================================================ trip wardrobe planner
+
+pageRoutes.get('/trip-planner', (c) => {
+  const fit = c.var.app.session.fit;
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Trip wardrobe planner — ${c.env.SITE_NAME}`,
+        description: 'Build a day-by-day capsule wardrobe from real, in-stock products within one total budget.',
+        path: '/trip-planner',
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+        activeNav: 'planner',
+      },
+      `<div class="wrap planner-shell"><section class="section page-intro">
+        <p class="eyebrow">Capsule planner</p><h1>Pack the trip, not random pieces.</h1>
+        <p class="muted">Tell us where you are going and what each day looks like. We build distinct daily edits while keeping the whole plan inside one budget.</p>
+        ${fit ? `<div class="notice good">Using your saved fit profile. <a href="/profile">Review sizes</a></div>` : '<div class="notice">Add your <a href="/profile">fit profile</a> so available sizes rank first.</div>'}
+      </section>
+      <div class="planner-layout"><form method="POST" action="/trip-planner" class="planner-form panel">
+        <label class="field"><span>Destination</span><input name="destination" required maxlength="60" placeholder="Goa"></label>
+        <div class="form-grid">
+          <label class="field"><span>Number of days</span><input type="number" name="days" min="1" max="5" value="3" required></label>
+          <label class="field"><span>Total shopping budget in ₹</span><input type="number" name="budget" min="1000" max="1000000" step="100" value="12000" required></label>
+        </div>
+        <label class="field"><span>Plans and occasions</span><textarea name="occasions" maxlength="300" placeholder="Beach day, dinner, sightseeing"></textarea></label>
+        <label class="field"><span>Extra constraints</span><textarea name="notes" maxlength="240" placeholder="Breathable, easy to rewear, no heels"></textarea></label>
+        <button class="btn btn-primary btn-block" type="submit">Build my trip wardrobe</button>
+      </form>
+      <aside class="planner-preview panel"><p class="eyebrow">What you get</p><ol class="step-list">
+        <li><strong>One edit per day</strong><span>Built from the live catalogue</span></li>
+        <li><strong>One shared budget</strong><span>No per-item budget loophole</span></li>
+        <li><strong>Your sizes lifted</strong><span>Fit-aware, never over-filtered</span></li>
+        <li><strong>A shareable plan</strong><span>Keep it in your wardrobe</span></li>
+      </ol></aside></div></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/trip-planner', async (c) => {
+  const limited = await rateLimit(c.env, 'stylist', rateIdentity(c.req.raw, c.var.app.session.id));
+  if (!limited.ok) return c.text('Too many planner requests. Try again later.', 429);
+  const form = await c.req.formData();
+  const destination = String(form.get('destination') ?? '').trim().slice(0, 60);
+  const days = Math.round(Number(form.get('days')));
+  const budgetRupees = Number(form.get('budget'));
+  const notes = String(form.get('notes') ?? '').trim().slice(0, 240);
+  const occasions = String(form.get('occasions') ?? '')
+    .split(/[,;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  if (destination.length < 2 || !Number.isInteger(days) || days < 1 || days > 5 || !Number.isFinite(budgetRupees) || budgetRupees < 1_000 || budgetRupees > 1_000_000) {
+    return c.text('Check the destination, days, and budget.', 400);
+  }
+
+  const budget = Math.round(budgetRupees * 100);
+  const planned = await buildTripPlan(c.env, {
+    destination,
+    days,
+    budget,
+    occasions,
+    notes,
+    session: c.var.app.session,
+  });
+  if (planned.days.length !== days) {
+    return c.html(
+      layout(
+        {
+          env: c.env,
+          title: `No trip wardrobe yet — ${c.env.SITE_NAME}`,
+          description: 'No live products fit this trip plan and budget.',
+          path: '/trip-planner',
+          nonce: c.var.app.nonce,
+          noindex: true,
+          showHeaderSearch: true,
+        },
+        `<div class="wrap-narrow"><section class="section"><h1>We need a little more room.</h1><p class="muted">The live catalogue could not cover this many days inside ${esc(formatINR(budget))}. Try fewer days, a wider description, or a higher budget.</p><a class="btn" href="/trip-planner">Adjust plan</a></section></div>`,
+      ),
+      422,
+    );
+  }
+
+  const tripId = newId('tr');
+  const created = Date.now();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(
+      `INSERT INTO ${T.trips} (id, owner_key, title, destination, days, occasions, budget, total_price, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).bind(tripId, ownerKey(c.var.app.session), `${destination} · ${days} day wardrobe`, destination, days, JSON.stringify(occasions), budget, planned.total, created),
+  ];
+  planned.days.forEach((day) => {
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO ${T.looks} (id, owner_key, title, prompt, budget, total_price, created_at) VALUES (?,?,?,?,?,?,?)`,
+      ).bind(day.lookId, ownerKey(c.var.app.session), `${destination} day ${day.day}: ${day.label}`, day.prompt, day.budget, day.total, created),
+      c.env.DB.prepare(
+        `INSERT INTO ${T.tripLooks} (trip_id, look_id, day, label) VALUES (?,?,?,?)`,
+      ).bind(tripId, day.lookId, day.day, day.label),
+      ...day.items.map((selection, index) =>
+        c.env.DB.prepare(
+          `INSERT INTO ${T.lookItems} (look_id, product_id, slot, position) VALUES (?,?,?,?)`,
+        ).bind(day.lookId, selection.item.id, selection.slot, index),
+      ),
+    );
+  });
+  await c.env.DB.batch(statements);
+  return c.redirect(`/trips/${tripId}`, 303);
+});
+
+pageRoutes.get('/trips/:id', async (c) => {
+  const trip = await c.env.DB.prepare(
+    `SELECT id, title, destination, days, occasions, budget, total_price, created_at
+     FROM ${T.trips} WHERE id = ? AND status = 'active'`,
+  )
+    .bind(c.req.param('id'))
+    .first<{ id: string; title: string; destination: string; days: number; occasions: string; budget: number; total_price: number; created_at: number }>();
+  if (!trip) return c.notFound();
+  const rows = await c.env.DB.prepare(
+    `SELECT tl.day, tl.label, tl.look_id, li.slot, li.position, ${PRODUCT_COLUMNS}
+     FROM ${T.tripLooks} tl
+     JOIN ${T.looks} l ON l.id = tl.look_id AND l.status = 'active'
+     JOIN ${T.lookItems} li ON li.look_id = l.id
+     JOIN ${T.products} p ON p.id = li.product_id AND p.status = 'active'
+     JOIN ${T.brands} b ON b.id = p.brand_id AND b.status = 'active'
+     WHERE tl.trip_id = ? ORDER BY tl.day, li.position`,
+  )
+    .bind(trip.id)
+    .all<Record<string, unknown>>();
+  const grouped = new Map<number, { label: string; lookId: string; items: ResultItem[] }>();
+  for (const row of rows.results ?? []) {
+    const day = Number(row.day);
+    const entry = grouped.get(day) ?? { label: String(row.label), lookId: String(row.look_id), items: [] };
+    entry.items.push(toResultItem(row));
+    grouped.set(day, entry);
+  }
+  const remaining = Math.max(0, trip.budget - trip.total_price);
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `${trip.title} — ${c.env.SITE_NAME}`,
+        description: `${trip.days}-day wardrobe plan for ${trip.destination} within ${formatINR(trip.budget)}.`,
+        path: `/trips/${trip.id}`,
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+        activeNav: 'planner',
+        ogImage: grouped.values().next().value?.items[0]?.image_url ?? undefined,
+      },
+      `<div class="wrap"><section class="section trip-hero"><div><p class="eyebrow">Shareable trip wardrobe</p><h1>${esc(trip.title)}</h1>
+        <p class="muted">A capsule built only from live merchant inventory. Rewear what you own; buy only what earns a place.</p></div>
+        <div class="budget-meter"><div class="row-between tiny"><span>${esc(formatINR(trip.total_price))} planned</span><span>${esc(formatINR(remaining))} left</span></div>
+          <div class="meter"><span style="width:${Math.min(100, Math.round((trip.total_price / Math.max(1, trip.budget)) * 100))}%"></span></div></div>
+        <label class="field share-field"><span>Share link</span><input readonly value="${esc(`${c.env.SITE_URL}/trips/${trip.id}`)}"></label>
+      </section>
+      <div class="trip-days">${[...grouped.entries()].map(([day, entry]) => `<section class="trip-day"><div class="trip-day-head"><span class="day-number">${day.toString().padStart(2, '0')}</span><div><p class="eyebrow">Day ${day}</p><h2>${esc(entry.label)}</h2></div><a class="btn btn-sm" href="/looks/${esc(entry.lookId)}">Open look</a></div>
+        ${productGrid(entry.items, { now: Date.now() })}</section>`).join('')}</div></div>`,
     ),
   );
 });
@@ -1721,10 +2029,16 @@ pageRoutes.get('/account/verify', async (c) => {
   const anonymousOwner = ownerKey(c.var.app.session);
   const userOwner = `u:${user.id}`;
   await mergeOwner(c.env, anonymousOwner, userOwner);
+  const shopperProfile = await loadShopperProfile(c.env, userOwner);
   await c.env.DB.prepare(`UPDATE ${T.users} SET last_seen_at = ? WHERE id = ?`)
     .bind(Date.now(), user.id)
     .run();
   c.var.app.session.user_id = user.id;
+  if (shopperProfile) {
+    c.var.app.session.fit = shopperProfile.fit;
+    c.var.app.session.gender_pref = shopperProfile.fit.gender;
+    c.var.app.session.taste = shopperProfile.taste;
+  }
   await saveSession(c.env, c.var.app.session);
   return c.redirect('/wardrobe?signed_in=1', 303);
 });
@@ -1733,6 +2047,73 @@ pageRoutes.post('/account/logout', async (c) => {
   delete c.var.app.session.user_id;
   await saveSession(c.env, c.var.app.session);
   return c.redirect('/account', 303);
+});
+
+// ============================================================ fit profile
+
+pageRoutes.get('/profile', (c) => {
+  const current = c.var.app.session.fit ?? { avoid_materials: [] };
+  const sizes = ['xxs', 'xs', 's', 'm', 'l', 'xl', 'xxl', '3xl', '4xl', '5xl', 'free'];
+  const shoeSizes = ['35', '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46'];
+  const option = (value: string, selected?: string) =>
+    `<option value="${esc(value)}"${selected === value ? ' selected' : ''}>${esc(value.toUpperCase())}</option>`;
+  return c.html(
+    layout(
+      {
+        env: c.env,
+        title: `Fit profile — ${c.env.SITE_NAME}`,
+        description: 'Save your usual sizes and fit preferences for better-ranked fashion recommendations.',
+        path: '/profile',
+        nonce: c.var.app.nonce,
+        noindex: true,
+        showHeaderSearch: true,
+      },
+      `<div class="wrap-narrow"><section class="section page-intro">
+        <p class="eyebrow">Personal fit</p><h1>Find your size sooner.</h1>
+        <p class="muted">We lift products available in your usual size. Nothing is hidden because merchant sizing can be incomplete.</p>
+        ${c.req.query('saved') === '1' ? '<div class="notice good">Fit profile saved. Search and outfit planning now use it.</div>' : ''}
+        <form method="POST" action="/profile" class="profile-form">
+          <div class="form-grid">
+            <label class="field"><span>Shop for</span><select name="gender">
+              <option value="">Any department</option>${['women', 'men', 'unisex', 'kids'].map((value) => `<option value="${value}"${current.gender === value ? ' selected' : ''}>${label(value)}</option>`).join('')}
+            </select></label>
+            <label class="field"><span>Preferred fit</span><select name="fit">
+              <option value="">No preference</option>${['slim', 'regular', 'relaxed', 'oversized'].map((value) => `<option value="${value}"${current.fit === value ? ' selected' : ''}>${label(value)}</option>`).join('')}
+            </select></label>
+            <label class="field"><span>Usual top size</span><select name="top_size"><option value="">Not set</option>${sizes.map((value) => option(value, current.top_size)).join('')}</select></label>
+            <label class="field"><span>Usual bottom size</span><select name="bottom_size"><option value="">Not set</option>${sizes.map((value) => option(value, current.bottom_size)).join('')}</select></label>
+            <label class="field"><span>Shoe size</span><select name="shoe_size"><option value="">Not set</option>${shoeSizes.map((value) => option(value, current.shoe_size)).join('')}</select></label>
+          </div>
+          <fieldset class="preference-fieldset"><legend><h2>Materials to avoid</h2></legend>
+            <p class="tiny">These are strongly demoted, not silently removed.</p>
+            <div class="check-grid">${ALL_MATERIALS.slice(0, 18).map((material) => `<label class="check-card"><input type="checkbox" name="avoid_material" value="${esc(material)}"${current.avoid_materials.includes(material) ? ' checked' : ''}><span>${esc(label(material))}</span></label>`).join('')}</div>
+          </fieldset>
+          <button class="btn btn-primary" type="submit">Save fit profile</button>
+        </form>
+      </section></div>`,
+    ),
+  );
+});
+
+pageRoutes.post('/profile', async (c) => {
+  const limited = await rateLimit(c.env, 'write', rateIdentity(c.req.raw, c.var.app.session.id));
+  if (!limited.ok) return c.text('Too many requests. Try again later.', 429);
+  const form = await c.req.formData();
+  const profile = sanitiseFitProfile({
+    gender: String(form.get('gender') ?? ''),
+    fit: String(form.get('fit') ?? ''),
+    top_size: String(form.get('top_size') ?? ''),
+    bottom_size: String(form.get('bottom_size') ?? ''),
+    shoe_size: String(form.get('shoe_size') ?? ''),
+    avoid_materials: form.getAll('avoid_material').map(String),
+  });
+  c.var.app.session.fit = profile;
+  c.var.app.session.gender_pref = profile.gender;
+  await Promise.all([
+    persistFitProfile(c.env, ownerKey(c.var.app.session), profile),
+    saveSession(c.env, c.var.app.session),
+  ]);
+  return c.redirect('/profile?saved=1', 303);
 });
 
 // ============================================================ taste onboarding
@@ -1790,7 +2171,10 @@ pageRoutes.post('/taste', async (c) => {
     if (value === 1 || value === -1) taste[token] = value;
   }
   c.var.app.session.taste = taste;
-  await saveSession(c.env, c.var.app.session);
+  await Promise.all([
+    persistTasteProfile(c.env, ownerKey(c.var.app.session), taste),
+    saveSession(c.env, c.var.app.session),
+  ]);
   return c.redirect('/drops?taste=saved', 303);
 });
 
@@ -1831,6 +2215,8 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
         the ones that <em>nearly</em> matched. That gap report is a product roadmap.</li>
         <li><strong>Feed health.</strong> Every rejected item, with the reason, so you
         can fix your data rather than guess.</li>
+        <li><strong>Transparent attribution.</strong> Add approved referral parameters
+        without changing your product host or buying placement.</li>
       </ul>
       <h2>What it costs</h2>
       <p>Nothing during launch. Listing, catalogue tools and discovery are free, with
@@ -1849,8 +2235,8 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
       <ul>
         <li>Your searches and which results you clicked, to improve ranking and to
         tell brands what people are looking for — in aggregate, never tied to you.</li>
-        <li>Items you save, looks you build, brands you follow, taste settings and
-        alerts you set, against your session or signed-in account.</li>
+        <li>Items you save, looks and trip wardrobes you build, brands you follow,
+        fit and taste settings, and alerts you set, against your session or signed-in account.</li>
         <li>Your email address, only if you give it to us for alerts, saved-search
         digests or passwordless sign-in.</li>
       </ul>
@@ -1859,7 +2245,8 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
         <li>No third-party advertising or tracking pixels.</li>
         <li>We don't sell personal data.</li>
         <li>We don't pass your identity to brands. When you click out, the brand sees
-        a normal referral, the same as any link.</li>
+        a referral. A disclosed affiliate link may include merchant-approved campaign
+        parameters, never your profile or email.</li>
       </ul>
       <h2>Your controls</h2>
       <p>If you stay anonymous, clearing cookies detaches you from saved items. If
@@ -2055,6 +2442,113 @@ async function buildBudgetedLook(
 
   visit(0, [], seed?.price ?? 0, 0);
   return { items: best, total: best.reduce((sum, selection) => sum + selection.item.price, 0) };
+}
+
+interface TripPlanInput {
+  destination: string;
+  days: number;
+  budget: number;
+  occasions: string[];
+  notes: string;
+  session: AppContext['session'];
+}
+
+interface PlannedTripDay {
+  day: number;
+  label: string;
+  prompt: string;
+  budget: number;
+  total: number;
+  lookId: string;
+  items: LookSelection[];
+}
+
+/** Build a capsule plan without ever spending more than the shared trip budget. */
+async function buildTripPlan(
+  env: Env,
+  input: TripPlanInput,
+): Promise<{ days: PlannedTripDay[]; total: number }> {
+  const defaults = ['Arrival and exploring', 'Day out', 'Dinner', 'Relaxed day', 'Travel home'];
+  const used = new Set<string>();
+  const days: PlannedTripDay[] = [];
+  let remaining = input.budget;
+
+  for (let index = 0; index < input.days; index++) {
+    const day = index + 1;
+    const labelText = input.occasions[index % Math.max(1, input.occasions.length)] ?? defaults[index % defaults.length];
+    const dayBudget = Math.floor(remaining / (input.days - index));
+    const profile = fitPrompt(input.session.fit);
+    const prompt = [
+      `${labelText} in ${input.destination}`,
+      'comfortable capsule piece that can be reworn',
+      input.notes,
+      profile,
+    ]
+      .filter(Boolean)
+      .join('. ')
+      .slice(0, 300);
+
+    let built = await buildBudgetedLook(env, prompt, dayBudget, input.session);
+    let items = built.items.filter((selection) => !used.has(selection.item.id));
+    let total = items.reduce((sum, selection) => sum + selection.item.price, 0);
+
+    // Sparse catalogues may not have every complementary slot. A genuine,
+    // available hero piece is more useful than inventing a complete outfit.
+    if (!items.length) {
+      const query = `${prompt} under ₹${Math.floor(dayBudget / 100)}`;
+      const response = await search(env, {
+        query,
+        perPage: 24,
+        session: input.session,
+        filterMode: 'natural-language',
+      });
+      let pick = response.items.find((item) => item.price <= dayBudget && !used.has(item.id));
+      if (!pick) {
+        const broad = await env.DB.prepare(
+          `SELECT ${PRODUCT_COLUMNS} FROM ${T.products} p
+           JOIN ${T.brands} b ON b.id = p.brand_id
+           WHERE p.status = 'active' AND p.availability != 'out_of_stock'
+             AND b.status = 'active' AND p.price <= ?
+           ORDER BY p.popularity DESC, p.last_verified_at DESC, p.price ASC LIMIT 60`,
+        )
+          .bind(dayBudget)
+          .all<Record<string, unknown>>();
+        const candidates = (broad.results ?? []).map(toResultItem).filter((item) => !used.has(item.id));
+        const preferredSizes = [
+          input.session.fit?.top_size,
+          input.session.fit?.bottom_size,
+          input.session.fit?.shoe_size,
+        ].filter((value): value is string => Boolean(value));
+        candidates.sort((a, b) => {
+          const fitA = preferredSizes.some((size) => a.sizes.includes(size)) ? 1 : 0;
+          const fitB = preferredSizes.some((size) => b.sizes.includes(size)) ? 1 : 0;
+          const avoidA = a.materials.some((material) => input.session.fit?.avoid_materials.includes(material)) ? 1 : 0;
+          const avoidB = b.materials.some((material) => input.session.fit?.avoid_materials.includes(material)) ? 1 : 0;
+          return fitB - fitA || avoidA - avoidB || b.popularity - a.popularity || a.price - b.price;
+        });
+        pick = candidates[0];
+      }
+      if (!pick) break;
+      items = [{ slot: 'hero piece', item: pick }];
+      total = pick.price;
+      built = { items, total };
+    }
+
+    if (total > dayBudget || total > remaining) break;
+    for (const selection of items) used.add(selection.item.id);
+    remaining -= total;
+    days.push({
+      day,
+      label: truncate(labelText, 60),
+      prompt,
+      budget: dayBudget,
+      total,
+      lookId: newId('lk'),
+      items,
+    });
+  }
+
+  return { days, total: input.budget - remaining };
 }
 
 function toResultItem(row: Record<string, unknown>): ResultItem {

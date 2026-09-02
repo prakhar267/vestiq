@@ -19,7 +19,7 @@ export interface LayoutOptions {
   showHeaderSearch?: boolean;
   /** Mobile bottom search dock. */
   showMobileDock?: boolean;
-  activeNav?: 'search' | 'stylist' | 'drops' | 'brands' | 'wardrobe';
+  activeNav?: 'search' | 'stylist' | 'planner' | 'drops' | 'brands' | 'wardrobe';
 }
 
 /**
@@ -58,6 +58,7 @@ export function securityHeaders(nonce: string): Record<string, string> {
 const NAV = [
   { href: '/search', label: 'Search', key: 'search' as const, desktopOnly: false },
   { href: '/stylist', label: 'Stylist', key: 'stylist' as const, desktopOnly: false },
+  { href: '/trip-planner', label: 'Plan', key: 'planner' as const, desktopOnly: false },
   { href: '/drops', label: 'New in', key: 'drops' as const, desktopOnly: true },
   { href: '/brands', label: 'Brands', key: 'brands' as const, desktopOnly: true },
   { href: '/wardrobe', label: 'Saved', key: 'wardrobe' as const, desktopOnly: false },
@@ -120,6 +121,8 @@ function footer(env: Env): string {
         <ul>
           <li><a href="/search">Search</a></li>
           <li><a href="/stylist">Ask the stylist</a></li>
+          <li><a href="/look-builder">Build a look</a></li>
+          <li><a href="/trip-planner">Plan a trip</a></li>
           <li><a href="/drops">New in</a></li>
           <li><a href="/brands">All brands</a></li>
           <li><a href="/collections">Collections</a></li>
@@ -140,6 +143,8 @@ function footer(env: Env): string {
           <li><a href="/privacy">Privacy</a></li>
           <li><a href="/terms">Terms</a></li>
           <li><a href="/account">Account</a></li>
+          <li><a href="/profile">Fit profile</a></li>
+          <li><a href="/sources">Inventory sources</a></li>
         </ul>
       </div>
     </div>

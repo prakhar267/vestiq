@@ -171,6 +171,55 @@ test('shopper can save a standing search, tune taste, follow a brand, and build 
   await expectNoBlockingA11y(page);
 });
 
+test('shopper can save fit preferences and build a multi-day trip wardrobe', async ({ page }) => {
+  await page.goto('/profile');
+  await page.getByLabel('Shop for').selectOption('women');
+  await page.getByLabel('Preferred fit').selectOption('relaxed');
+  await page.getByLabel('Usual top size').selectOption('m');
+  await page.locator('input[name="avoid_material"][value="leather"]').check();
+  await page.getByRole('button', { name: 'Save fit profile' }).click();
+  await expect(page).toHaveURL(/\/profile\?saved=1/);
+  await expect(page.getByText('Fit profile saved')).toBeVisible();
+
+  await page.goto('/search?q=linen%20holiday%20outfit');
+  await expect(page.getByText('Ranked with your saved fit profile')).toBeVisible();
+
+  await page.goto('/trip-planner');
+  await page.getByLabel('Destination').fill('Goa');
+  await page.getByLabel('Number of days').fill('2');
+  await page.getByLabel('Total shopping budget in ₹').fill('10000');
+  await page.getByLabel('Plans and occasions').fill('Sightseeing, dinner');
+  await page.getByLabel('Extra constraints').fill('Breathable and easy to rewear');
+  await page.getByRole('button', { name: 'Build my trip wardrobe' }).click();
+  await expect(page).toHaveURL(/\/trips\/tr_/);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Goa · 2 day wardrobe');
+  await expect(page.getByText('Day 1', { exact: true })).toBeVisible();
+  await expect(page.getByText('Day 2', { exact: true })).toBeVisible();
+  expect(await page.locator('.trip-days .card').count()).toBeGreaterThanOrEqual(2);
+  await expectNoBlockingA11y(page);
+
+  await page.goto('/wardrobe');
+  await expect(page.getByRole('heading', { name: 'Trip wardrobes' })).toBeVisible();
+  await expect(page.getByRole('link', { name: /Goa · 2 day wardrobe/ })).toBeVisible();
+});
+
+test('inventory sources expose only real live catalogue owners', async ({ page }) => {
+  await page.goto('/sources');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Every result has a real source.');
+  await expect(page.locator('.source-card')).toHaveCount(2);
+  await expect(page.locator('body')).toContainText('QA Kora');
+  await expect(page.locator('body')).not.toContainText('QA Pending');
+  await expectNoBlockingA11y(page);
+});
+
+test('visual search has a discoverable, accessible upload entry', async ({ page }) => {
+  await page.goto('/visual-search');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Start with the image in your head.');
+  await expect(page.getByRole('button', { name: 'Choose image' })).toBeVisible();
+  await expect(page.locator('body')).toContainText('images are processed, not retained');
+  await expectNoBlockingA11y(page);
+});
+
 test('mobile search has a usable filter surface and no viewport overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/search?q=dress%20or%20co-ord%20set');
@@ -263,6 +312,13 @@ test('merchant onboarding is free and pending inventory remains private', async 
   ).toHaveCount(0);
   await expectNoBlockingA11y(page);
 
+  await page.goto('/merchant/attribution');
+  await page.getByLabel('Affiliate network or programme').fill('QA affiliate programme');
+  await page.getByLabel('Approved URL parameters').fill('ref=vestiq&utm_source=vestiq');
+  await page.getByRole('button', { name: 'Save attribution settings' }).click();
+  await expect(page).toHaveURL('/merchant/attribution');
+  await expect(page.getByRole('button', { name: 'Disable' })).toBeVisible();
+
   const publicBrand = await page.request.get(`/brand/${brandSlug}`, {
     maxRedirects: 0,
   });
@@ -274,6 +330,11 @@ test('free-launch routes are organic, direct, and contain no demo renderer', asy
     '/',
     '/search',
     '/stylist',
+    '/look-builder',
+    '/trip-planner',
+    '/visual-search',
+    '/profile',
+    '/sources',
     '/drops',
     '/brands',
     '/wardrobe',

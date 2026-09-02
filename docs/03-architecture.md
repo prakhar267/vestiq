@@ -83,7 +83,7 @@ API independently of search results.
 
 ## 4. Data model (D1, all tables `vestiq_`-prefixed)
 
-22 tables. Full DDL in `migrations/`.
+25 tables. Full DDL in `migrations/`.
 
 **Catalog**
 - `brands` — identity, domain, `trust_score`, ship/return SLAs, status
@@ -107,6 +107,8 @@ API independently of search results.
   anonymous session state is transactionally merged into `u:<id>` at sign-in
 - `looks`, `look_items` — shareable budgeted outfit output; the public id exposes
   products and prompt but never owner identity
+- `profiles` — bounded fit and taste preferences, merged into the shopper account
+- `trips`, `trip_looks` — shareable multi-day wardrobes composed from saved looks
 
 **Supply**
 - `merchants` — brand ↔ login, hashed API key, feed URL + type
@@ -199,6 +201,8 @@ The free launch has no promoted-placement code path. Every result is organic and
 move only because of relevance, trust, freshness, popularity, optional session taste
 data, or an explicit shopper sort. `/taste` writes bounded tag weights whose
 ranking effect cannot exceed ±8%.
+Merchant-approved affiliate query parameters are appended only after ranking at
+the outbound hop; they cannot change the destination host and are disclosed on the PDP.
 Tests assert that legacy campaign rows cannot enter retrieval or ranking.
 
 ---

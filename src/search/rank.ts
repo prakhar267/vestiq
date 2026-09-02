@@ -262,6 +262,38 @@ export function tasteFactor(product: Product, session?: SessionData): number {
   return 1 + mean * TASTE_MAX_EFFECT;
 }
 
+const SHOE_CATEGORIES = new Set(['sneakers', 'heels', 'flats', 'sandals', 'boots']);
+const BOTTOM_CATEGORIES = new Set(['skirts', 'trousers', 'jeans', 'shorts']);
+
+/**
+ * Fit settings are intentionally soft. Merchant size data is uneven, so a saved
+ * size can lift an available match but must never make an otherwise useful item
+ * disappear. Material avoids receive the strongest bounded demotion.
+ */
+export function fitFactor(product: Product, session?: SessionData): number {
+  const profile = session?.fit;
+  if (!profile) return 1;
+
+  let factor = 1;
+  if (profile.gender && product.gender !== 'unisex') {
+    factor *= product.gender === profile.gender ? 1.03 : 0.94;
+  }
+
+  const preferredSize = SHOE_CATEGORIES.has(product.category)
+    ? profile.shoe_size
+    : BOTTOM_CATEGORIES.has(product.category)
+      ? profile.bottom_size
+      : profile.top_size;
+  if (preferredSize && product.sizes.length) {
+    const available = product.sizes.some((size) => size.toLowerCase() === preferredSize);
+    factor *= available ? 1.09 : 0.93;
+  }
+
+  if (profile.fit && product.style_tags.includes(profile.fit)) factor *= 1.04;
+  if (profile.avoid_materials.some((material) => product.materials.includes(material))) factor *= 0.86;
+  return Math.max(0.82, Math.min(1.14, factor));
+}
+
 export interface ScoreInput {
   fused: FusedHit;
   product: Product;
@@ -297,11 +329,12 @@ export function scoreItem(input: ScoreInput): { score: number; parts: Record<str
   const stock = product.availability === 'low_stock' ? 0.95 : 1.0;
 
   const taste = tasteFactor(product, session);
+  const fit = fitFactor(product, session);
 
-  const score = base * trust * fresh * pop * agreement * exact * stock * taste;
+  const score = base * trust * fresh * pop * agreement * exact * stock * taste * fit;
   return {
     score,
-    parts: { base, trust, fresh, pop, agreement, exact, stock, taste },
+    parts: { base, trust, fresh, pop, agreement, exact, stock, taste, fit },
   };
 }
 
@@ -311,7 +344,7 @@ export function scoreItem(input: ScoreInput): { score: number; parts: Record<str
  * Why this result is here, in the user's language. This is the transparency
  * device that makes an opaque ranker feel steerable rather than arbitrary.
  */
-export function matchReasons(product: Product, parse: ParsedQuery): string[] {
+export function matchReasons(product: Product, parse: ParsedQuery, session?: SessionData): string[] {
   const reasons: string[] = [];
 
   for (const m of product.materials) {
@@ -334,6 +367,14 @@ export function matchReasons(product: Product, parse: ParsedQuery): string[] {
   }
   if (parse.like_brands.length) {
     reasons.push(`Similar to ${parse.like_brands[0]}`);
+  }
+  const preferred = SHOE_CATEGORIES.has(product.category)
+    ? session?.fit?.shoe_size
+    : BOTTOM_CATEGORIES.has(product.category)
+      ? session?.fit?.bottom_size
+      : session?.fit?.top_size;
+  if (preferred && product.sizes.some((size) => size.toLowerCase() === preferred)) {
+    reasons.push(`Your size ${preferred.toUpperCase()}`);
   }
 
   return unique(reasons).slice(0, 3);

@@ -53,6 +53,15 @@ your categories that someone else won").
 product grids inline, plus a full-look builder that searches outfit slots,
 optimises the combination against one total budget, and saves a shareable look.
 
+**Fit and trip planning** — a shopper-controlled fit profile softly lifts stock in
+their usual sizes, while the capsule planner builds distinct daily edits under one
+shared trip budget. Both survive passwordless sign-in and stay editable.
+
+**Source and attribution transparency** — `/sources` shows the live catalogue
+owners and freshness. Merchants can optionally append approved referral query
+parameters to their own product URLs; those links are disclosed and marked
+`sponsored`, but never influence ranking.
+
 **SEO as the primary channel** — everything is server-rendered on the first byte,
 with JSON-LD, partitioned sitemaps, and programmatic collection pages that are only
 marked indexable at ≥12 genuinely matching items.
@@ -147,7 +156,7 @@ src/
   jobs/             job queue + scheduled task dispatcher
   routes/           pages · api · admin · merchant · seo · go (outbound)
   ui/               layout (CSP, JSON-LD) · components
-  client/           the five progressive-enhancement islands
+  client/           small progressive-enhancement islands
 migrations/         additive-only SQL
 scripts/            migrate · embed · build-client · check-budget
 tests/              unit + integration (real workerd, real D1)
@@ -158,9 +167,9 @@ tests/              unit + integration (real workerd, real D1)
 ## Free launch policy
 
 Vestiq is free for shoppers and brands during launch. There is no Vestiq checkout,
-consumer paywall, subscription, promoted placement, affiliate wrapping, campaign
-budget, or payout ledger. Product prices are shown only because the shopper buys
-from the independent brand on its own website.
+consumer paywall, subscription, promoted placement, campaign budget, or payout
+ledger. A brand may configure approved affiliate query parameters on its own
+destination; those links are clearly disclosed and never affect organic ordering.
 
 ---
 

@@ -835,6 +835,63 @@ describe('passwordless shopper account', () => {
   });
 });
 
+// ============================================================ personalisation & planning
+
+describe('fit profile and trip wardrobe', () => {
+  it('persists bounded fit settings for the anonymous owner', async () => {
+    const first = await SELF.fetch('http://localhost/profile');
+    const cookie = (first.headers.get('set-cookie') ?? '').split(';')[0];
+    const res = await SELF.fetch('http://localhost/profile', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'gender=women&fit=relaxed&top_size=M&bottom_size=not-a-size&avoid_material=polyester',
+      redirect: 'manual',
+    });
+    expect(res.status).toBe(303);
+    const page = await SELF.fetch('http://localhost/profile?saved=1', { headers: { cookie } });
+    const html = await page.text();
+    expect(html).toContain('Fit profile saved');
+    expect(html).toContain('value="m" selected');
+    const saved = await env.DB.prepare('SELECT profile FROM vestiq_profiles LIMIT 1')
+      .first<{ profile: string }>();
+    expect(saved?.profile).toContain('"top_size":"m"');
+    expect(saved?.profile).not.toContain('not-a-size');
+  });
+
+  it('builds a shareable multi-day wardrobe inside one budget', async () => {
+    const first = await SELF.fetch('http://localhost/trip-planner');
+    const cookie = (first.headers.get('set-cookie') ?? '').split(';')[0];
+    const res = await SELF.fetch('http://localhost/trip-planner', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'destination=Goa&days=2&budget=10000&occasions=sightseeing%2Cdinner&notes=breathable',
+      redirect: 'manual',
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toMatch(/^\/trips\/tr_/);
+    const location = res.headers.get('location')!;
+    const page = await SELF.fetch(`http://localhost${location}`, { headers: { cookie } });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain('Goa · 2 day wardrobe');
+    expect(html).toContain('Day 1');
+    expect(html).toContain('Day 2');
+    const trip = await env.DB.prepare('SELECT days, budget, total_price FROM vestiq_trips ORDER BY created_at DESC LIMIT 1')
+      .first<{ days: number; budget: number; total_price: number }>();
+    expect(trip?.days).toBe(2);
+    expect(trip?.total_price ?? Infinity).toBeLessThanOrEqual(trip?.budget ?? 0);
+  });
+
+  it('publishes a truthful inventory-source page', async () => {
+    const res = await SELF.fetch('http://localhost/sources');
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain('Every result has a real source');
+    expect(html).toContain('Kaanchi');
+    expect(html).not.toContain('10,000+');
+  });
+});
+
 // ============================================================ SEO surfaces
 
 describe('SEO', () => {

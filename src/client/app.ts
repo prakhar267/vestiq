@@ -74,6 +74,17 @@ function initImages(root: ParentNode = document): void {
   }
 }
 
+function initImageSearchLaunchers(): void {
+  for (const launcher of $$<HTMLButtonElement>('[data-image-search]')) {
+    launcher.hidden = false;
+    launcher.addEventListener('click', () => {
+      const camera = $<HTMLButtonElement>('[data-camera]');
+      if (camera) camera.click();
+      else toast('Image search is unavailable right now.');
+    });
+  }
+}
+
 // ---------------------------------------------------------------- search bar
 
 interface Suggestions {
@@ -710,6 +721,7 @@ function initStylist(): void {
 
 function boot(): void {
   for (const bar of $$<HTMLElement>('[data-searchbar]')) initSearchBar(bar);
+  initImageSearchLaunchers();
   initImages();
   initSaves();
   initAlerts();

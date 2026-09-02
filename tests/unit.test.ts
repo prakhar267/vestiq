@@ -21,6 +21,7 @@ import {
   applyFilters,
   buildRelaxations,
   freshnessFactor,
+  fitFactor,
   fuse,
   matchReasons,
   popularityFactor,
@@ -52,6 +53,8 @@ import { constraintParseForSearch } from '../src/search';
 import { drainStylistBuffer } from '../src/routes/api';
 import { filterRail, pagination, sortSelect } from '../src/ui/components';
 import { configurationReadiness } from '../src/lib/readiness';
+import { sanitiseFitProfile } from '../src/lib/profile';
+import { affiliateDestination } from '../src/routes/go';
 import type { Env, ParsedQuery, Product, ResultItem } from '../src/types';
 
 // ============================================================ configuration readiness
@@ -793,6 +796,47 @@ describe('scoring factors', () => {
     });
     expect(liked).toBeGreaterThan(1);
     expect(liked).toBeLessThanOrEqual(1.08);
+  });
+
+  it('lifts an available saved size without turning fit into a hard filter', () => {
+    const product = makeProduct({ category: 'tshirts', sizes: ['s', 'm'], materials: ['cotton'] });
+    const matching = fitFactor(product, {
+      id: 's', created_at: 0, last_seen_at: 0, recent_queries: [],
+      fit: { top_size: 'm', fit: 'regular', avoid_materials: [] },
+    });
+    const missing = fitFactor(product, {
+      id: 's', created_at: 0, last_seen_at: 0, recent_queries: [],
+      fit: { top_size: 'xl', fit: 'regular', avoid_materials: [] },
+    });
+    expect(matching).toBeGreaterThan(1);
+    expect(missing).toBeGreaterThan(0);
+    expect(matching).toBeGreaterThan(missing);
+  });
+});
+
+describe('fit profile validation', () => {
+  it('bounds persisted values and rejects invalid sizes and materials', () => {
+    expect(sanitiseFitProfile({
+      gender: 'women', top_size: 'M', bottom_size: '<script>', fit: 'relaxed',
+      avoid_materials: ['polyester', 'https://bad.example', 'polyester'],
+    })).toEqual({
+      gender: 'women', top_size: 'm', fit: 'relaxed', avoid_materials: ['polyester'],
+    });
+  });
+});
+
+describe('affiliate destinations', () => {
+  it('appends approved parameters without changing the merchant host', () => {
+    const out = affiliateDestination('https://brand.example/products/look?colour=blue', 'ref=vestiq&utm_source=vestiq');
+    expect(out.affiliate).toBe(true);
+    expect(new URL(out.url).hostname).toBe('brand.example');
+    expect(new URL(out.url).searchParams.get('colour')).toBe('blue');
+    expect(new URL(out.url).searchParams.get('ref')).toBe('vestiq');
+  });
+
+  it('refuses redirect-like affiliate values', () => {
+    const out = affiliateDestination('https://brand.example/products/look', 'next=https://evil.example');
+    expect(out).toEqual({ url: 'https://brand.example/products/look', affiliate: false });
   });
 });
 

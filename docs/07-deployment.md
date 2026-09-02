@@ -176,7 +176,8 @@ The application intentionally starts without invented products. For real traffic
 
 Vestiq is free for shoppers and brands during launch. Product prices link to the
 brand's own store; Vestiq does not run checkout, subscriptions, promoted results,
-affiliate wrapping, campaign budgets, or payouts.
+campaign budgets, or payouts. Optional merchant-approved affiliate query parameters
+remain on the brand's product host, are disclosed, and do not affect ranking.
 
 Note that `/merchant/signup` guesses `https://<domain>/products.json`, which is
 correct for the large majority of Indian D2C stores because they run Shopify. The
