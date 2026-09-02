@@ -398,10 +398,33 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   if (opts.brandId) candidates = candidates.filter((c) => c.row.brand_id === opts.brandId);
 
   // --- hard filters --------------------------------------------------------
-  const filtered = applyFilters(
+  let effectiveFilterParse = filterParse;
+  let filtered = applyFilters(
     candidates.map((c) => c.row),
-    filterParse,
+    effectiveFilterParse,
   );
+
+  // Some merchant list feeds omit fabric even for otherwise strong matches.
+  // Honour a typed fabric when verified metadata exists, but do not turn a
+  // healthy category/colour result into an empty page solely because every
+  // recalled candidate reports an empty material array. A material explicitly
+  // selected in the filter UI remains strict.
+  if (
+    !filtered.kept.length &&
+    filterMode === 'natural-language' &&
+    effectiveFilterParse.materials.length &&
+    !(opts.hardFacets ?? []).includes('materials')
+  ) {
+    const withoutUnverifiedMaterial = { ...effectiveFilterParse, materials: [] };
+    const retried = applyFilters(
+      candidates.map((candidate) => candidate.row),
+      withoutUnverifiedMaterial,
+    );
+    if (retried.kept.length) {
+      effectiveFilterParse = withoutUnverifiedMaterial;
+      filtered = retried;
+    }
+  }
   const keptIds = new Set(filtered.kept.map((p) => p.id));
   const surviving = candidates.filter((c) => keptIds.has(c.row.id));
 
@@ -440,12 +463,12 @@ export async function search(env: Env, opts: SearchOptions): Promise<SearchRespo
   const items = scored.slice(offset, offset + perPage);
 
   const relaxations =
-    total === 0 ? buildRelaxations(filterParse, opts.query, filtered.binding) : [];
+    total === 0 ? buildRelaxations(effectiveFilterParse, opts.query, filtered.binding) : [];
 
   return {
     query: opts.query,
     parse,
-    filter_parse: filterParse,
+    filter_parse: effectiveFilterParse,
     items,
     facets,
     total,

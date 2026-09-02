@@ -55,6 +55,17 @@ beforeAll(async () => {
     materials: ['linen'],
     occasions: ['work'],
   });
+
+  await seedProduct(brandId, {
+    title: 'Solids: Black Everyday Tee',
+    category: 'tshirts',
+    price: 89_900,
+    colors: ['black'],
+    // A realistic marketplace-listing gap: the title and colour are present,
+    // but the upstream collection feed does not publish fabric metadata.
+    materials: [],
+    sizes: ['s', 'm', 'l'],
+  });
 });
 
 // ============================================================ health
@@ -218,6 +229,23 @@ describe('GET /search', () => {
     ).text();
     expect(html).toContain('Block-printed Cotton Kurta Set');
     expect(html).toContain('₹1,999');
+  });
+
+  it('does not return zero results solely because a listing omits fabric metadata', async () => {
+    const html = await (
+      await SELF.fetch('http://localhost/search?q=black%20cotton%20t-shirt')
+    ).text();
+    expect(html).toContain('Solids: Black Everyday Tee');
+    expect(html).not.toContain('Nothing matched that');
+  });
+
+  it('keeps an explicitly selected material facet strict', async () => {
+    const html = await (
+      await SELF.fetch(
+        'http://localhost/search?q=black%20t-shirt&filters=1&category=tshirts&color=black&material=cotton',
+      )
+    ).text();
+    expect(html).not.toContain('Solids: Black Everyday Tee');
   });
 
   it('shows what the query was understood as', async () => {
