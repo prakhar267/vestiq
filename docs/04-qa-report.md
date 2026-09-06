@@ -1,7 +1,7 @@
 # Vestiq — QA Report
 
 > Role: QA
-> Suite: 199 Vitest tests (`npm test`) plus 7 Playwright/Axe journeys, all passing
+> Suite: 226 Vitest tests (`npm test`) plus 16 Playwright/Axe journeys, all passing
 > Runtime under test: workerd via `@cloudflare/vitest-pool-workers` — real D1
 > (SQLite + FTS5), real KV semantics, real `Request`/`Response`
 
@@ -173,14 +173,11 @@ range is normalised rather than producing a filter that can only match nothing.
 
 ## 5. Known limitations (accepted, not defects)
 
-1. **OG images are SVG**, which Twitter/Facebook don't render. Product and brand
-   pages — the pages actually shared — use real merchant photography instead.
-   Upgrade path: satori + resvg-wasm.
-2. **`total` is capped at 400** by the recall pool, hence "400+". Exact counts
+1. **`total` is capped at 400** by the recall pool, hence "400+". Exact counts
    would need a second COUNT query per search.
-3. **Facet counts are computed over the candidate pool**, not the whole corpus.
-4. **Rate limiting is approximate** — KV is eventually consistent, so a client
+2. **Facet counts are computed over the candidate pool**, not the whole corpus.
+3. **Rate limiting is approximate** — KV is eventually consistent, so a client
    spread across colos can briefly exceed a budget. Documented in `ratelimit.ts`.
-5. **`vestiq_events` has a UNIQUE constraint** used for idempotent inserts; two
+4. **`vestiq_events` has a UNIQUE constraint** used for idempotent inserts; two
    genuinely distinct events in the same millisecond, session, product and
    position collapse into one. Acceptable for analytics.

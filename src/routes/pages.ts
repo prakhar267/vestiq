@@ -329,10 +329,11 @@ pageRoutes.get('/', async (c) => {
 
   const body = `
 <section class="hero"><div class="wrap">
-  <p class="hero-kicker">AI stylist · live Indian fashion inventory</p>
+  <p class="hero-kicker">AI stylist · live catalogue pilot</p>
   <h1>Fashion the internet hid from you.</h1>
-  <p class="tagline">${esc(env.SITE_TAGLINE)} Search independent brands by mood, occasion, budget — or a screenshot.</p>
+  <p class="tagline">${esc(env.SITE_TAGLINE)} Search genuine live inventory by mood, occasion, budget — or a screenshot.</p>
   ${searchBarShell('hero')}
+  ${newBrands.length ? `<p class="tiny" style="margin-top:var(--s3)"><strong>Live launch source:</strong> ${newBrands.map((brand) => `${esc(brand.name)} · ${brand.product_count.toLocaleString('en-IN')} pieces`).join(' · ')}. More brands can join through the free merchant portal.</p>` : ''}
   ${exampleQueries.length ? `<div class="examples">
     <ul class="chips">
       ${exampleQueries
@@ -418,7 +419,7 @@ ${
       {
         env,
         title: `${env.SITE_NAME} — ${env.SITE_TAGLINE}`,
-        description: `Describe what you want in plain words and discover independent fashion brands by mood, occasion, budget, or a photo.`,
+        description: `Describe what you want in plain words and discover genuine live fashion inventory by mood, occasion, budget, or a photo.`,
         path: '/',
         nonce: app.nonce,
         jsonLd,
@@ -473,7 +474,7 @@ pageRoutes.get('/search', async (c) => {
         {
           env,
           title: `Search — ${env.SITE_NAME}`,
-          description: 'Search independent fashion brands by mood, occasion or budget.',
+          description: 'Search genuine live fashion inventory by mood, occasion or budget.',
           path: '/search',
           nonce: app.nonce,
           showHeaderSearch: false,
@@ -613,7 +614,7 @@ ${
       {
         env,
         title: `${truncate(query, 60)} — ${env.SITE_NAME}`,
-        description: `${response.total}${response.capped ? '+' : ''} pieces matching "${truncate(query, 90)}" across independent fashion brands. ${env.SITE_TAGLINE}`,
+        description: `${response.total}${response.capped ? '+' : ''} live pieces matching "${truncate(query, 90)}". ${env.SITE_TAGLINE}`,
         path: canonicalPath,
         nonce: app.nonce,
         jsonLd,
@@ -897,7 +898,10 @@ pageRoutes.get('/brands', async (c) => {
       {
         env,
         title: `All brands — ${env.SITE_NAME}`,
-        description: `Browse ${brands.length}+ independent fashion labels indexed by ${env.SITE_NAME}.`,
+        description:
+          brands.length === 1
+            ? `Browse the live launch catalogue currently indexed by ${env.SITE_NAME}.`
+            : `Browse ${brands.length} independent fashion labels indexed by ${env.SITE_NAME}.`,
         path: '/brands',
         nonce: app.nonce,
         showHeaderSearch: true,
@@ -2213,9 +2217,12 @@ const STATIC_PAGES: Record<string, { title: string; description: string; body: s
       <p>Meanwhile you already know what you want. You just can't say it in the language
       of a category tree. "Something for a beach wedding that isn't sweaty" is not a
       filter combination.</p>
-      <p>Vestiq indexes the long tail for the way people actually describe clothes.
+      <p>Vestiq indexes fashion for the way people actually describe clothes.
       Describe it however you think about it — a mood, an occasion, a budget, a
-      screenshot — and we find it across brands you'd otherwise never see.</p>
+      screenshot — and we search genuine live inventory.</p>
+      <p><strong>Launch scope:</strong> the current public catalogue is a live pilot
+      with The Souled Store. The merchant portal is open for additional authorised
+      brands, and every active source is disclosed on the <a href="/sources">inventory-sources page</a>.</p>
       <h2>Free during launch</h2>
       <p>Vestiq is currently free for shoppers and brands. Search ordering is based
       on relevance and catalogue quality; there are no paid placements.</p>

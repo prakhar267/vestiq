@@ -2,7 +2,7 @@
 
 > Role: SRE
 > Verdict: **cleared for launch** on the free tier, with the four scale triggers
-> in §6 tracked. Two items in §7 must be actioned by the account owner.
+> in §6 tracked. The custom domain is explicitly deferred for the public demo.
 
 ---
 
@@ -20,10 +20,10 @@
 **Error budget:** 43 min/month. Burn policy — >50% consumed mid-month freezes
 feature deploys until the cause is fixed.
 
-Measured on the live deployment: `/health` ~120 ms, home ~1.3 s cold / ~200 ms
-warm, search 1.1–2.0 s with a cold AI parse and ~90 ms on a cached parse. The
-dominant term is the inference call, which is exactly why the parse is cached for
-7 days (ADR-6) rather than the results.
+Latest live regression: literal search is roughly 0.5–0.7 s at the server,
+natural-language search is roughly 1.3–2.0 s depending on cache state, a complete
+look is about 2.1 s, and a two-day trip plan is about 1.6 s. Query parses and
+vectors are cached without caching inventory or shopper-specific ranking.
 
 ---
 
@@ -34,7 +34,7 @@ during the build.
 
 | Failure | Behaviour | Verified |
 | --- | --- | --- |
-| Gemini absent or down | Falls to Workers AI | Live (no Gemini key set; `/health` reports `workers-ai only`) |
+| Gemini absent or down | Falls to Workers AI | Previously observed live; current deployment has Gemini configured |
 | Workers AI parse fails | Falls to heuristic parser; results still returned | Live (observed both the object-shape crash and the timeout) |
 | Model returns degenerate parse | Rejected by `looksDegenerate`, falls to heuristic | Live + tests |
 | All AI down | Heuristic parse + lexical/structured recall; banner shown | Test asserts `/health` reports `heuristic only` and search still returns |
@@ -134,7 +134,9 @@ both of which are bounded by construction:
 
 The public repository's **Scheduler and production health** workflow now checks
 `/health` and drives background work every 15 minutes. It is the primary free
-monitor and scheduler; `SCHEDULER_PIGGYBACK` is disabled. GitHub disables scheduled
+monitor and scheduler; a marker-gated traffic fallback runs only when its heartbeat
+is stale. A second **Production synthetic checks** workflow exercises the public
+demo path twice per hour. GitHub disables scheduled
 workflows after 60 days without repository activity, so confirm it remains enabled
 during routine operations. A five-minute Better Stack, Pingdom, or Cloudflare
 Notification check remains a useful independent second monitor.
@@ -144,9 +146,9 @@ available, the Actions driver can be replaced by a native trigger by uncommentin
 `[triggers]`, setting `SCHEDULER_DRIVER = "cloudflare-cron"`, and disabling the
 scheduled workflow. See `docs/07-deployment.md` for the driver comparison.
 
-Also recommended before real traffic: a custom domain (see
-`docs/07-deployment.md`), and adding `GEMINI_API_KEY` to upgrade parse and vision
-quality from the Workers AI baseline.
+Gemini parse/vision is configured on the current deployment. The remaining
+owner-controlled presentation upgrade is a custom domain (see
+`docs/07-deployment.md`).
 
 ---
 

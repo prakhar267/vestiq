@@ -17,8 +17,8 @@ export interface Env {
   LOG_LEVEL: string;
   /**
    * "1" enables traffic-driven scheduling (see maybeRunScheduledFromRequest).
-   * Off by default so a real cron trigger or external scheduler is the explicit,
-   * preferred driver — and so tests are not mutating data mid-request.
+   * It can back up the declared scheduler without replacing it; tests omit it
+   * so ordinary requests never mutate background state during assertions.
    */
   SCHEDULER_PIGGYBACK?: string;
   /** Declares the dependable driver used when piggybacking is disabled. */

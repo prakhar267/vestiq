@@ -153,6 +153,7 @@ function footer(env: Env): string {
           <li><a href="/account">Account</a></li>
           <li><a href="/profile">Fit profile</a></li>
           <li><a href="/sources">Inventory sources</a></li>
+          <li><a href="https://github.com/prakhar267/vestiq/issues/new/choose">Share feedback</a></li>
         </ul>
       </div>
     </div>
@@ -169,7 +170,7 @@ function footer(env: Env): string {
 export function layout(opts: LayoutOptions, body: string): string {
   const base = opts.env.SITE_URL.replace(/\/$/, '');
   const canonical = base + opts.path;
-  const ogImage = opts.ogImage ?? `${base}/og?title=${encodeURIComponent(opts.title)}`;
+  const ogImage = opts.ogImage ?? `${base}/og.png`;
   const jsonLd = (opts.jsonLd ?? [])
     .map(
       (block) =>
@@ -201,6 +202,7 @@ ${opts.noindex ? '<meta name="robots" content="noindex,follow">' : '<meta name="
 <meta name="theme-color" content="#0f0e0d" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="/styles.css?v=${ASSET_VERSION}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="search" type="application/opensearchdescription+xml" title="${esc(opts.env.SITE_NAME)}" href="/opensearch.xml">
 ${opts.head ?? ''}

@@ -1,0 +1,55 @@
+name: Production synthetic checks
+
+on:
+  schedule:
+    # Offset from the catalogue scheduler so a separate run checks the public
+    # experience. GitHub can delay cron jobs, so traffic-driven scheduling is
+    # also enabled as an idempotent fallback in the Worker.
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: production-synthetic
+  cancel-in-progress: true
+
+jobs:
+  public-demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verify health and demo readiness
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+        run: |
+          set -euo pipefail
+          BASE="${SITE_URL%/}"
+
+          curl -fsS --max-time 30 "$BASE/health" -o /tmp/health.json
+          jq -e '.status == "healthy" and .checks.catalogue_integrity.ok == true' /tmp/health.json
+
+          READY_STATUS=$(curl -sS --max-time 30 -o /tmp/ready.json -w '%{http_code}' "$BASE/ready")
+          test "$READY_STATUS" = "200" || test "$READY_STATUS" = "503"
+          jq -e '[.checks | to_entries[] | select(.key != "custom_domain") | .value.ok] | all' /tmp/ready.json
+
+      - name: Exercise the public demo path
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://vestiq.prakhargupta267.workers.dev' }}
+        run: |
+          set -euo pipefail
+          BASE="${SITE_URL%/}"
+
+          for ROUTE in / /look-builder /trip-planner /profile /visual-search /sources; do
+            curl -fsS --max-time 30 "$BASE$ROUTE" -o /tmp/page.html
+            grep -q '<h1' /tmp/page.html
+          done
+
+          SEARCH_SECONDS=$(curl -sS --max-time 15 -o /tmp/search.html -w '%{time_total}' \
+            "$BASE/search?q=outdoor")
+          grep -q 'id="results"' /tmp/search.html
+          awk -v seconds="$SEARCH_SECONDS" 'BEGIN { exit !(seconds < 8) }'
+
+          curl -fsS --max-time 30 -D /tmp/og-headers.txt -o /tmp/og.png "$BASE/og.png"
+          grep -qi '^content-type: image/png' /tmp/og-headers.txt
+          test "$(wc -c < /tmp/og.png)" -gt 10000
+
+          echo "Production demo path passed in ${SEARCH_SECONDS}s search time."

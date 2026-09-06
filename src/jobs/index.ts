@@ -2,6 +2,7 @@ import type { Env } from '../types';
 import { T, getFlag } from '../lib/db';
 import { chunk, formatINR, newId, safeJson } from '../lib/util';
 import { makeLogger, type Logger } from '../lib/log';
+import { SCHEDULER_HEARTBEAT_KEY, schedulerHeartbeatTimestamp } from '../lib/readiness';
 import { getAi } from '../ai/provider';
 import { activateIndex, buildIndex, deactivateIndex, quantise, type IndexEntry } from '../search/vector';
 import { fetchFeed, type FeedType } from '../ingest/adapters';
@@ -860,6 +861,16 @@ export async function runScheduledTasks(
   }
 
   const ms = Date.now() - started;
+  try {
+    await env.CACHE.put(
+      SCHEDULER_HEARTBEAT_KEY,
+      JSON.stringify({ ts: Date.now(), ran, skipped, ms }),
+      { expirationTtl: 3 * 24 * 60 * 60 },
+    );
+  } catch {
+    // Task markers remain authoritative; heartbeat loss should only affect
+    // monitoring, never make successful scheduled work fail.
+  }
   log.info('scheduler tick complete', { ran, skipped, ms });
   return { ran, skipped, ms };
 }
@@ -909,21 +920,22 @@ async function weeklyMaintenance(env: Env, log: Logger): Promise<void> {
  * a site whose maintenance exists to serve traffic, but it is why a real cron
  * trigger remains the preferred driver (docs/07-deployment.md).
  */
-const PIGGYBACK_KEY = 'cron:driver:last';
 const PIGGYBACK_INTERVAL_MS = 15 * MINUTE;
 const PIGGYBACK_BUDGET_MS = 5_000;
 
 export async function maybeRunScheduledFromRequest(env: Env, log: Logger): Promise<void> {
   if (env.SCHEDULER_PIGGYBACK !== '1') return;
   try {
-    const raw = await env.CACHE.get(PIGGYBACK_KEY);
-    const last = raw ? parseInt(raw, 10) || 0 : 0;
+    const raw = await env.CACHE.get(SCHEDULER_HEARTBEAT_KEY);
+    const last = schedulerHeartbeatTimestamp(raw);
     if (Date.now() - last < PIGGYBACK_INTERVAL_MS) return;
 
     // Claim before doing any work so concurrent requests don't pile on.
-    await env.CACHE.put(PIGGYBACK_KEY, String(Date.now()), {
-      expirationTtl: Math.ceil((PIGGYBACK_INTERVAL_MS * 3) / 1000),
-    });
+    await env.CACHE.put(
+      SCHEDULER_HEARTBEAT_KEY,
+      JSON.stringify({ ts: Date.now(), trigger: 'traffic-claim' }),
+      { expirationTtl: Math.ceil((PIGGYBACK_INTERVAL_MS * 3) / 1000) },
+    );
 
     await runScheduledTasks(env, log.child({ trigger: 'piggyback' }), PIGGYBACK_BUDGET_MS);
   } catch (err) {

@@ -185,7 +185,11 @@ seoRoutes.get('/manifest.webmanifest', (c) =>
       display: 'standalone',
       background_color: '#fbfaf8',
       theme_color: '#fbfaf8',
-      icons: [{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml' }],
+      icons: [
+        { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml' },
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+      ],
     },
     200,
     { 'cache-control': 'public, max-age=86400' },
@@ -195,11 +199,9 @@ seoRoutes.get('/manifest.webmanifest', (c) =>
 /**
  * OG image.
  *
- * Rendered as SVG, which Slack/WhatsApp/LinkedIn handle but Twitter and Facebook
- * do not. Accepted deliberately: product and brand pages — the pages people
- * actually share — set og:image to real merchant photography instead, so this
- * only covers home/search/stylist. Upgrade path is satori + resvg-wasm to emit
- * PNG; tracked in docs/05-sre-readiness.md as a known limitation.
+ * Legacy title-specific SVG endpoint. Normal pages use the static `/og.png`,
+ * which is accepted by every major social platform; product and brand pages use
+ * genuine merchant photography.
  */
 seoRoutes.get('/og', (c) => {
   const title = (c.req.query('title') ?? c.env.SITE_NAME).slice(0, 90);

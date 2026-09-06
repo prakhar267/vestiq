@@ -68,9 +68,10 @@ CURRENCY = "INR"
 EMBED_DIM = "384"
 EMBED_VERSION = "1"
 LOG_LEVEL = "info"
-# The public-repository workflow is the dependable scheduler. Piggybacking is off
-# to keep normal page requests read-only and scheduling ownership unambiguous.
-SCHEDULER_PIGGYBACK = "0"
+# GitHub Actions remains the primary scheduler. Traffic-driven ticks are a safe,
+# idempotent fallback when GitHub delays scheduled workflows; they run only after
+# the response and share the same heartbeat/task markers.
+SCHEDULER_PIGGYBACK = "1"
 SCHEDULER_DRIVER = "github-actions"
 
 # Secrets (set via `wrangler secret put <NAME>`), never in this file:

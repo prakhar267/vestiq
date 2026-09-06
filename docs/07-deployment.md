@@ -99,7 +99,7 @@ duplicating work or losing any.
 
 | Driver | Status here | Notes |
 | --- | --- | --- |
-| **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ❌ disabled | Available as an emergency fallback, but ordinary requests do not own production scheduling. |
+| **Traffic-driven** (`SCHEDULER_PIGGYBACK = "1"`) | ✅ fallback | Runs only when the primary heartbeat is stale; work stays after-response, idempotent and marker-gated. |
 | **Manual** (`POST /admin/jobs/tick`) | ✅ available | Token-gated. Use it to force a run during an incident, or after onboarding a brand, without waiting for traffic. |
 | **Cloudflare cron trigger** | ❌ unavailable | Preferred, but all 5 free-plan cron slots on this account are used by other Workers. `[triggers]` is commented out in `wrangler.toml`. |
 | **GitHub Actions** | ✅ active | The public repository runs `.github/workflows/scheduler.yml` every 15 minutes at no Actions-minute charge. It also verifies `/health`. |
@@ -124,11 +124,15 @@ The scheduler needs `ADMIN_TOKEN`. CI additionally needs
 
 `.github/workflows/ci.yml`:
 
-- **every push/PR** → typecheck (worker + client), 199 Vitest tests, 7
+- **every push/PR** → typecheck (worker + client), 226 Vitest tests, 16
   Playwright/Axe journeys, client build, performance budget;
 - **push to `main`** → migrations, deploy, then a **smoke test** that fails the
   deploy unless `/health` reports healthy and `/`, `/search` and `/robots.txt`
   serve real content.
+
+`.github/workflows/production-synthetic.yml` independently checks the public
+feature routes, genuine search results, social PNG and demo-mode readiness twice
+per hour. Scheduler heartbeats are also exposed by `/health` and `/ready`.
 
 Repo secrets for deploys: `CLOUDFLARE_API_TOKEN` (Workers Scripts:Edit, D1:Edit,
 Workers KV:Edit), `CLOUDFLARE_ACCOUNT_ID`.

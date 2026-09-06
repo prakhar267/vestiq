@@ -50,10 +50,10 @@ import { computeFacets, priceBandRange } from '../src/search/facets';
 import { toParsedQuery } from '../src/ai/provider';
 import { rateIdentity, rateLimit, RULES } from '../src/lib/ratelimit';
 import { applyUrlFilters, explicitHardFacets, validatedSearchParams } from '../src/routes/pages';
-import { canUseDeterministicParse, constraintParseForSearch } from '../src/search';
+import { canUseDeterministicParse, constraintParseForSearch, isPublicTrendingQuery } from '../src/search';
 import { drainStylistBuffer } from '../src/routes/api';
 import { filterRail, pagination, sortSelect } from '../src/ui/components';
-import { configurationReadiness } from '../src/lib/readiness';
+import { configurationReadiness, schedulerHeartbeatTimestamp } from '../src/lib/readiness';
 import { sanitiseFitProfile } from '../src/lib/profile';
 import { affiliateDestination } from '../src/routes/go';
 import type { Env, ParsedQuery, Product, ResultItem } from '../src/types';
@@ -80,6 +80,38 @@ describe('configuration readiness', () => {
     const check = configurationReadiness({ ...base, SCHEDULER_PIGGYBACK: '1' }).scheduler;
     expect(check.ok).toBe(false);
     expect(check.note).toContain('traffic-driven only');
+  });
+
+  it('reports the traffic driver as a fallback when a primary scheduler exists', () => {
+    const check = configurationReadiness({
+      ...base,
+      SCHEDULER_DRIVER: 'github-actions',
+      SCHEDULER_PIGGYBACK: '1',
+    }).scheduler;
+    expect(check.ok).toBe(true);
+    expect(check.note).toContain('traffic fallback');
+  });
+
+  it('reads both current JSON and legacy numeric scheduler heartbeats', () => {
+    expect(schedulerHeartbeatTimestamp('{"ts":1720000000000}')).toBe(1_720_000_000_000);
+    expect(schedulerHeartbeatTimestamp('1720000000001')).toBe(1_720_000_000_001);
+    expect(schedulerHeartbeatTimestamp('not-json')).toBe(0);
+    expect(schedulerHeartbeatTimestamp(null)).toBe(0);
+  });
+});
+
+describe('public trending-query privacy', () => {
+  it('allows ordinary fashion searches', () => {
+    expect(isPublicTrendingQuery('breathable Goa dinner outfit')).toBe(true);
+    expect(isPublicTrendingQuery('Harry Potter oversized')).toBe(true);
+  });
+
+  it('rejects contact details, URLs, markup and control characters', () => {
+    expect(isPublicTrendingQuery('dress for me@example.com')).toBe(false);
+    expect(isPublicTrendingQuery('look at https://example.com')).toBe(false);
+    expect(isPublicTrendingQuery('call 9876543210 for shirts')).toBe(false);
+    expect(isPublicTrendingQuery('<script>alert(1)</script>')).toBe(false);
+    expect(isPublicTrendingQuery('linen\u0000shirt')).toBe(false);
   });
 });
 

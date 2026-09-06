@@ -579,9 +579,20 @@ export async function recordSearch(
   }
 }
 
+/** Only aggregated, non-identifying search text can appear on the public home
+ * page. A single shopper's query is analytics, not homepage content. */
+export function isPublicTrendingQuery(query: string): boolean {
+  const clean = query.trim();
+  if (clean.length < 3 || clean.length > 60) return false;
+  if (/[<>\u0000-\u001f]/u.test(clean)) return false;
+  if (/https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(clean)) return false;
+  if (/\b(?:\+?91[\s-]?)?[6-9]\d{9}\b/.test(clean.replace(/[()]/g, ''))) return false;
+  return true;
+}
+
 /** Trending queries for the home page, from the last 7 days of real searches. */
 export async function trendingQueries(env: Env, limit = 10): Promise<string[]> {
-  const cacheKey = `trending:queries:v2:${limit}`;
+  const cacheKey = `trending:queries:v3:${limit}`;
   try {
     const cached = await env.CACHE.get(cacheKey, 'json');
     if (cached) return cached as string[];
@@ -600,13 +611,16 @@ export async function trendingQueries(env: Env, limit = 10): Promise<string[]> {
        )
        SELECT query_raw, n
        FROM ranked
-       WHERE recency = 1 AND result_count > 0
+       WHERE recency = 1 AND result_count > 0 AND n >= 2
        ORDER BY n DESC, ts DESC
        LIMIT ?`,
     )
-      .bind(Date.now() - 7 * 86_400_000, limit)
+      .bind(Date.now() - 7 * 86_400_000, Math.max(20, limit * 4))
       .all<{ query_raw: string }>();
-    const out = (res.results ?? []).map((r) => r.query_raw);
+    const out = (res.results ?? [])
+      .map((r) => r.query_raw)
+      .filter(isPublicTrendingQuery)
+      .slice(0, limit);
     await env.CACHE.put(cacheKey, JSON.stringify(out), { expirationTtl: 900 });
     return out;
   } catch {

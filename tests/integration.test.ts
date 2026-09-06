@@ -1015,7 +1015,12 @@ describe('SEO', () => {
 
   it('serves opensearch and the web manifest', async () => {
     expect((await SELF.fetch('http://localhost/opensearch.xml')).status).toBe(200);
-    expect((await SELF.fetch('http://localhost/manifest.webmanifest')).status).toBe(200);
+    const manifest = await SELF.fetch('http://localhost/manifest.webmanifest');
+    expect(manifest.status).toBe(200);
+    expect((await manifest.text())).toContain('/icon-512.png');
+    const home = await (await SELF.fetch('http://localhost/')).text();
+    expect(home).toContain('http://localhost:8787/og.png');
+    expect(home).toContain('/apple-touch-icon.png');
   });
 
   it('does not expose the old invented placeholder endpoint', async () => {

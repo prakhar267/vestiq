@@ -1,6 +1,43 @@
 import type { Env } from '../types';
 import { T } from './db';
 
+export const SCHEDULER_HEARTBEAT_KEY = 'cron:last:tick';
+const SCHEDULER_FRESH_MS = 60 * 60 * 1000;
+
+export function schedulerHeartbeatTimestamp(raw: string | null): number {
+  if (!raw) return 0;
+  const direct = Number(raw);
+  if (Number.isFinite(direct)) return direct;
+  try {
+    const parsed = JSON.parse(raw) as { ts?: unknown };
+    return typeof parsed.ts === 'number' && Number.isFinite(parsed.ts) ? parsed.ts : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Verify that a real scheduler has reached the Worker recently, not merely
+ * that a driver name exists in configuration. */
+export async function schedulerFreshness(
+  env: Env,
+  now = Date.now(),
+): Promise<{ ok: boolean; note: string }> {
+  if (env.SCHEDULER_DRIVER !== 'github-actions' && env.SCHEDULER_DRIVER !== 'cloudflare-cron') {
+    return { ok: false, note: 'no dependable scheduler declared' };
+  }
+  try {
+    const ts = schedulerHeartbeatTimestamp(await env.CACHE.get(SCHEDULER_HEARTBEAT_KEY));
+    if (!ts) return { ok: false, note: 'no scheduler heartbeat recorded yet' };
+    const ageMinutes = Math.max(0, Math.floor((now - ts) / 60_000));
+    return {
+      ok: now - ts <= SCHEDULER_FRESH_MS,
+      note: `last successful tick ${ageMinutes}m ago`,
+    };
+  } catch {
+    return { ok: false, note: 'scheduler heartbeat unavailable' };
+  }
+}
+
 export interface CatalogueReadiness {
   active_brands: number;
   active_products: number;
@@ -83,7 +120,9 @@ export function configurationReadiness(env: Env): Record<string, { ok: boolean; 
       ok: schedulerOk,
       note: schedulerOk
         ? schedulerDriver === 'github-actions'
-          ? 'GitHub Actions every 15 minutes'
+          ? env.SCHEDULER_PIGGYBACK === '1'
+            ? 'GitHub Actions every 15 minutes + traffic fallback'
+            : 'GitHub Actions every 15 minutes'
           : 'Cloudflare cron every 15 minutes'
         : env.SCHEDULER_PIGGYBACK === '1'
           ? 'traffic-driven only; enable a dependable scheduler before relying on alerts'

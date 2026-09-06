@@ -100,12 +100,12 @@ production health** workflow.
    npx wrangler kv key list --namespace-id f66a3a5800ec49f29737a4bf9c3871e2 --remote --prefix "cron:last:"
    ```
    Jobs stuck in `running` are recovered automatically after 5 minutes. To force a
-   task to run now, delete its `cron:last:<name>` marker. The piggyback driver
-   also holds a `cron:driver:last` claim key; deleting it lets the very next page
-   view carry a tick instead of waiting out the 15-minute interval.
+   task to run now, delete its `cron:last:<name>` marker. All scheduler drivers
+   share `cron:last:tick`; deleting it lets the very next page view carry a backup
+   tick instead of waiting out the 15-minute interval.
 
-Traffic-driven scheduling remains available as a fallback by setting
-`SCHEDULER_PIGGYBACK = "1"`, but it is not the primary production driver.
+Traffic-driven scheduling is enabled as a heartbeat-gated fallback, but GitHub
+Actions remains the primary production driver.
 
 ## Incident: a merchant's products vanished
 

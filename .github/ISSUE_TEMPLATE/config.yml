@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Try the live Vestiq demo
+    url: https://vestiq.prakhargupta267.workers.dev
+    about: Open the current public catalogue pilot before reporting a problem.

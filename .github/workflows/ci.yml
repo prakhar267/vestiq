@@ -98,4 +98,9 @@ jobs:
           curl -fsS --max-time 30 -o /tmp/robots.txt "$BASE/robots.txt"
           grep -q 'Sitemap:' /tmp/robots.txt
 
+          echo "→ /og.png (social cards require a real PNG)"
+          curl -fsS --max-time 30 -D /tmp/og-headers.txt -o /tmp/og.png "$BASE/og.png"
+          grep -qi '^content-type: image/png' /tmp/og-headers.txt
+          test "$(wc -c < /tmp/og.png)" -gt 10000
+
           echo "All smoke checks passed."

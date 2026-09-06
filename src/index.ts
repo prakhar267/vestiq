@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AppContext, Env } from './types';
 import { T } from './lib/db';
 import { isBotUA, newId } from './lib/util';
-import { catalogueReadiness, configurationReadiness } from './lib/readiness';
+import { catalogueReadiness, configurationReadiness, schedulerFreshness } from './lib/readiness';
 import { makeLogger } from './lib/log';
 import { resolveSession, saveSession } from './lib/session';
 import { securityHeaders } from './ui/layout';
@@ -131,6 +131,7 @@ app.get('/health', async (c) => {
   };
   checks.admin_configured = { ok: Boolean(c.env.ADMIN_TOKEN) };
   Object.assign(checks, configurationReadiness(c.env));
+  checks.scheduler_freshness = await schedulerFreshness(c.env);
 
   return c.json(
     {
@@ -151,7 +152,10 @@ app.get('/health', async (c) => {
  * domain. Monitors page on /health and track /ready as a launch checklist.
  */
 app.get('/ready', async (c) => {
-  const catalogue = await catalogueReadiness(c.env);
+  const [catalogue, heartbeat] = await Promise.all([
+    catalogueReadiness(c.env),
+    schedulerFreshness(c.env),
+  ]);
   const configuration = configurationReadiness(c.env);
   const checks = {
     catalogue_integrity: {
@@ -167,6 +171,7 @@ app.get('/ready', async (c) => {
       note: c.env.ADMIN_TOKEN ? 'configured' : 'missing',
     },
     ...configuration,
+    scheduler_freshness: heartbeat,
   };
   const ready = Object.values(checks).every((check) => check.ok);
   return c.json(

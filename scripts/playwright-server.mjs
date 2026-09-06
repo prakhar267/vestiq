@@ -53,6 +53,8 @@ const worker = spawn(
     '--log-level',
     'error',
     '--show-interactive-dev-session=false',
+    '--var',
+    'SCHEDULER_PIGGYBACK:0',
   ],
   { stdio: 'inherit' },
 );

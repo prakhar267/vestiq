@@ -1,0 +1,31 @@
+name: Product feedback
+description: Suggest an improvement to search, looks, trip planning, fit or photo search.
+title: "[Feedback]: "
+labels: [feedback]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - Search results
+        - Complete-look builder
+        - Trip wardrobe
+        - Fit profile
+        - Photo search
+        - Merchant experience
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: What were you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: What would make it better?
+    validations:
+      required: true

@@ -66,11 +66,15 @@ parameters to their own product URLs; those links are disclosed and marked
 with JSON-LD, partitioned sitemaps, and programmatic collection pages that are only
 marked indexable at ≥12 genuinely matching items.
 
+**Current public catalogue** — a genuine-inventory pilot with The Souled Store.
+The product and merchant infrastructure supports multiple brands, but the live UI
+does not pretend that additional merchants are active before they are authorised.
+
 ---
 
 ## Architecture
 
-One Cloudflare Worker. No client framework — **5.0 KB of JS and 6.3 KB of CSS**,
+One Cloudflare Worker. No client framework — **5.2 KB of JS and 6.5 KB of CSS**,
 against budgets of 24 KB and 14 KB enforced in CI. On a discovery product the
 first paint *is* the pitch, so a hydration bundle would cost more conversions than
 any interaction it buys.
@@ -138,6 +142,7 @@ Deploy and operate: [`docs/07-deployment.md`](docs/07-deployment.md) ·
 | [05-sre-readiness.md](docs/05-sre-readiness.md) | SLOs, verified failure modes, observability, capacity, scale triggers, rollback |
 | [06-runbook.md](docs/06-runbook.md) | Incident procedures and routine operations |
 | [07-deployment.md](docs/07-deployment.md) | Deploy, secrets, scheduler, custom domain, going live with real inventory |
+| [08-demo-launch-kit.md](docs/08-demo-launch-kit.md) | Launch copy, 60-second demo, reliable prompts, gallery assets, demo-day checklist |
 
 The QA report is worth reading even if you skip the rest: several bugs in this
 build were *silent* — a dead lexical search arm, embeddings stored as TEXT, an AI
@@ -182,6 +187,7 @@ The application is configured for a real-catalogue-only launch. Migrations
 `0002_free_launch_cleanup.sql` and `0003_launch_integrity_and_retention.sql`
 remove both generations of invented catalogue data, block reserved destinations,
 and preserve only real merchant inventory. `/health` pages on contamination;
-`/ready` reports inventory, email, scheduler, domain and AI launch readiness.
-Onboard and approve real brands before opening traffic, then add a custom domain and configure `/health` alerting — see
-[`docs/05-sre-readiness.md`](docs/05-sre-readiness.md) §7.
+`/ready` reports inventory, email, scheduler heartbeat, domain and AI launch
+readiness. The public pilot has genuine live inventory, redundant scheduler
+checks and production monitoring. A custom domain remains intentionally deferred
+for the demo — see [`docs/08-demo-launch-kit.md`](docs/08-demo-launch-kit.md).
