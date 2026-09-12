@@ -6,7 +6,71 @@ AI-native fashion discovery for the long tail of independent Indian brands.
 Describe what you want the way you actually think about it — a mood, an occasion,
 a budget, a screenshot — and find it across brands the big marketplaces bury.
 
-**Live:** https://vestiq.prakhargupta267.workers.dev
+**[Open the live production demo](https://vestiq.prakhargupta267.workers.dev/)** ·
+**[Watch the product walkthrough](docs/launch/vestiq-demo.mp4)** ·
+**[Use the demo guide](docs/08-demo-launch-kit.md)**
+
+![Vestiq home page with natural-language fashion search and four guided journeys](docs/launch/01-home.png)
+
+The public pilot is running on Cloudflare with **1,347 genuine active products
+from The Souled Store** (verified 12 September 2026). There are no invented
+listings. Vestiq does not take payment: every product continues to the merchant's
+own store and checkout.
+
+---
+
+## Use the live product
+
+No account is required for the main demo. Start on the
+[home page](https://vestiq.prakhargupta267.workers.dev/) or open a journey directly:
+
+| Journey | What to do | What Vestiq returns |
+| --- | --- | --- |
+| [Natural-language search](https://vestiq.prakhargupta267.workers.dev/search?q=I%20need%20a%20breathable%20dinner%20outfit%20for%20Goa%20under%20%E2%82%B95000.) | Describe an occasion, style, colour, material or budget in one sentence. | Ranked live products, editable understanding chips, facets and match explanations. |
+| [Build a complete look](https://vestiq.prakhargupta267.workers.dev/look-builder?q=breathable%20dinner%20outfit%20for%20men%20under%20%E2%82%B95000) | Enter one outfit brief and a total budget. | Coordinated pieces optimised together under the budget, ready to save or share. |
+| [Plan a trip wardrobe](https://vestiq.prakhargupta267.workers.dev/trip-planner) | Add the destination, number of days, activities and shared budget. | Distinct day-by-day outfits that stay inside the trip total. |
+| [Remember my fit](https://vestiq.prakhargupta267.workers.dev/profile) | Save usual sizes, preferred fit and materials to avoid. | Available pieces in the shopper's fit receive a soft ranking lift. |
+| [Search from a photo](https://vestiq.prakhargupta267.workers.dev/visual-search) | Upload a JPEG, PNG or WebP fashion image up to 6 MB. | An editable text query inferred from visible colour, material and silhouette. The upload is processed, not retained. |
+| [Ask the stylist](https://vestiq.prakhargupta267.workers.dev/stylist) | Chat naturally and refine the request over multiple turns. | A streaming answer with live product grids from Vestiq's own search index. |
+
+Reliable prompts for a first demo:
+
+```text
+outdoor
+black cotton t-shirt
+Harry Potter oversized
+I need a breathable dinner outfit for Goa under ₹5000.
+```
+
+After searching, remove or change any interpretation chip, sort or filter the
+results, save pieces to the [wardrobe](https://vestiq.prakhargupta267.workers.dev/wardrobe),
+create a price/restock alert, or follow a brand. Anonymous state works in the
+browser; passwordless email sign-in carries it across devices.
+
+| Natural-language search | Complete look |
+| --- | --- |
+| ![Natural-language Goa outfit search with live results](docs/launch/02-natural-language-search.png) | ![A coordinated complete look inside one budget](docs/launch/03-complete-look.png) |
+
+| Trip wardrobe | Photo search |
+| --- | --- |
+| ![Two-day Goa trip wardrobe](docs/launch/04-trip-wardrobe.png) | ![Visual search upload interface](docs/launch/05-photo-search.png) |
+
+### For merchants
+
+Open [List your brand](https://vestiq.prakhargupta267.workers.dev/merchant/signup),
+submit the store and contact details, and use the merchant portal to validate a
+Shopify, Google Merchant Center or CSV feed. New sources remain in review until
+an operator verifies inventory ownership and approves the brand. Approved
+merchants receive row-level feed errors, catalogue health and demand-gap reports.
+The launch is free and paid placement is not supported.
+
+### For operators
+
+The authenticated admin console covers merchant approval, feed jobs, catalogue
+reports, zero-result demand, scheduler health and moderation. Operational access
+is intentionally not published. The procedures are in the
+[runbook](docs/06-runbook.md), while [deployment](docs/07-deployment.md) documents
+Cloudflare resources, secrets, CI/CD, rollback and custom-domain setup.
 
 ---
 
@@ -109,15 +173,21 @@ Notable decisions, with the reasoning in [`docs/03-architecture.md`](docs/03-arc
 
 ## Getting started
 
+Requirements: Node.js 20 or newer and npm. A Cloudflare account is only needed
+when deploying or using remote D1/KV resources.
+
 ```bash
+git clone https://github.com/prakhar267/vestiq.git
+cd vestiq
 npm ci
-npm run verify          # typecheck, Vitest, Playwright + Axe, perf budget
+npm run db:migrate:local
 npm run dev             # local dev at http://localhost:8787
 ```
 
-Local schema:
+Before submitting a change, run the same quality gate used by CI:
+
 ```bash
-node scripts/migrate.mjs --local
+npm run verify          # typecheck, Vitest, Playwright + Axe, perf budget
 ```
 
 The repository does not ship an invented catalogue. Onboard a real brand through
@@ -128,6 +198,14 @@ falsely marked sold out.
 
 Deploy and operate: [`docs/07-deployment.md`](docs/07-deployment.md) ·
 [`docs/06-runbook.md`](docs/06-runbook.md)
+
+Production is continuously checked by GitHub Actions: pushes to `main` run
+typechecking, 226 Vitest tests, 16 Playwright/Axe browser journeys and bundle
+budgets before Cloudflare deployment. Independent synthetic checks exercise the
+public routes twice per hour, while the catalogue scheduler runs every 15 minutes.
+Use [`/health`](https://vestiq.prakhargupta267.workers.dev/health) for runtime
+health and [`/ready`](https://vestiq.prakhargupta267.workers.dev/ready) for the
+stricter launch-readiness report.
 
 ---
 
